@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 import time
+import random
 
-# --- CONFIG & STYLING (Vastgehouden design) ---
-st.set_page_config(page_title="Professional Betslip Builder", page_icon="📈", layout="wide")
+# --- CONFIG & STYLING ---
+st.set_page_config(page_title="Professional Parlay Builder", page_icon="📈", layout="wide")
 TIMEZONE = pytz.timezone("Europe/Brussels")
 
 st.markdown("""
@@ -26,90 +27,91 @@ BASE_URL = "https://v3.football.api-sports.io"
 headers = {'x-apisports-key': API_KEY, 'x-rapidapi-host': 'v3.football.api-sports.io'}
 
 # --- STRATEGISCH CONTROLEPANEEL ---
-st.title("📈 Professional Betslip Builder")
+st.title("📈 Unique-Match Parlay Builder")
 
 with st.container():
     st.markdown('<div class="control-panel">', unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns(4)
     target_total = c1.number_input("Target Slip Odds", value=2.5, step=0.1)
-    match_count = c2.slider("Aantal Wedstrijden / Slip", 1, 5, 2)
-    min_odd_val = c3.number_input("Min. Odd per Match", value=1.10)
-    max_odd_val = c4.number_input("Max. Odd per Match", value=4.00)
+    match_count = c2.slider("Aantal Unieke Matchen / Slip", 1, 5, 2)
+    min_odd_val = c3.number_input("Min. Odd per Match", value=1.20)
+    max_odd_val = c4.number_input("Max. Odd per Match", value=3.00)
 
     f1, f2, f3 = st.columns(3)
-    time_window = f1.selectbox("Starttijd Venster", ["Volgende 1 uur", "Volgende 2 uur", "Volgende 6 uur", "Vandaag"])
-    min_prob_val = f2.slider("Minimale Model Probability (%)", 30, 95, 50)
-    sort_logic = f3.selectbox("Sorteer op", ["Slaagkans", "Odds"])
+    time_window = f1.selectbox("Starttijd (Enkel Toekomst)", ["Volgende 1 uur", "Volgende 2 uur", "Volgende 6 uur", "Vandaag"])
+    min_prob_val = f2.slider("Minimale Zekerheid (%)", 30, 95, 55)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# --- GENERATOR LOGICA (Fixtures-First) ---
-if st.button("🚀 GENEREER BEREKENDE SLIPS"):
+# --- GENERATOR LOGICA ---
+if st.button("🚀 GENEREER PARLAYS"):
     try:
-        with st.spinner("Live fixtures en odds synchroniseren..."):
-            # 1. Haal fixtures van vandaag op om teamnamen te garanderen
+        with st.spinner("Scannen op toekomstige unieke wedstrijden..."):
             today = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
-            fix_res = requests.get(f"{BASE_URL}/fixtures", headers=headers, params={'date': today})
+            fix_res = requests.get(f"{BASE_URL}/fixtures", headers=headers, params={'date': today, 'status': 'NS'}) # NS = Not Started
             fix_data = fix_res.json()
 
             if not fix_data.get('response'):
-                st.warning("Geen wedstrijden gevonden voor vandaag in de API.")
+                st.warning("Geen aankomende wedstrijden gevonden.")
             else:
                 now_ts = int(time.time())
                 t_limit = {"Volgende 1 uur": 1, "Volgende 2 uur": 2, "Volgende 6 uur": 6, "Vandaag": 24}[time_window]
                 
-                # Filter relevante fixtures
-                valid_fixtures = []
+                # Verzamel odds per unieke wedstrijd
+                match_pool = []
                 for f in fix_data['response']:
                     ts = f['fixture']['timestamp']
                     diff_h = (ts - now_ts) / 3600
-                    if 0 <= diff_h <= t_limit:
-                        valid_fixtures.append(f)
-
-                if not valid_fixtures:
-                    st.info(f"Geen wedstrijden die starten binnen: {time_window}")
-                else:
-                    # 2. Haal odds op voor de gefilterde fixtures
-                    pool = []
-                    # We pakken de top 20 fixtures om API-limieten per scan te respecteren
-                    for f in valid_fixtures[:20]:
+                    
+                    # Alleen strikt in de toekomst en binnen venster
+                    if 0.05 <= diff_h <= t_limit: 
                         f_id = f['fixture']['id']
-                        home = f['teams']['home']['name']
-                        away = f['teams']['away']['name']
-                        league = f['league']['name']
-                        kickoff = datetime.fromtimestamp(f['fixture']['timestamp'], TIMEZONE).strftime('%H:%M')
-
+                        
+                        # Haal odds voor deze specifieke fixture
                         odd_res = requests.get(f"{BASE_URL}/odds", headers=headers, params={'fixture': f_id})
-                        odd_data = odd_res.json()
-
-                        if odd_data.get('response'):
-                            for bm in odd_data['response'][0]['bookmakers']:
-                                if bm['name'] in ['Bet365', '1xBet', 'Bwin']:
-                                    for bet in bm['bets']:
-                                        for val in bet['values']:
-                                            odd = float(val['odd'])
-                                            prob = round((1/odd) * 100 + 5, 1) # Model calculatie
-                                            
-                                            if min_odd_val <= odd <= max_odd_val and prob >= min_prob_val:
-                                                pool.append({
-                                                    "match": f"{home} vs {away}",
+                        o_data = odd_res.json()
+                        
+                        if o_data.get('response'):
+                            best_bet_for_match = None
+                            highest_prob = 0
+                            
+                            for bm in o_data['response'][0]['bookmakers']:
+                                for bet in bm['bets']:
+                                    for val in bet['values']:
+                                        odd = float(val['odd'])
+                                        prob = round((1/odd) * 100 + 4.5, 1) # Model kans
+                                        
+                                        if min_odd_val <= odd <= max_odd_item and prob >= min_prob_val:
+                                            # We bewaren alleen de 'beste' bet per wedstrijd voor de pool
+                                            if prob > highest_prob:
+                                                highest_prob = prob
+                                                best_bet_for_match = {
+                                                    "fixture_id": f_id,
+                                                    "match": f"{f['teams']['home']['name']} vs {f['teams']['away']['name']}",
                                                     "market": f"{bet['name']}: {val['value']}",
                                                     "odd": odd,
                                                     "prob": prob,
-                                                    "time": kickoff,
-                                                    "league": league
-                                                })
+                                                    "time": datetime.fromtimestamp(ts, TIMEZONE).strftime('%H:%M'),
+                                                    "league": f['league']['name']
+                                                }
+                            if best_bet_for_match:
+                                match_pool.append(best_bet_for_match)
 
-                    # 3. Slips bouwen
-                    if sort_logic == "Slaagkans": pool.sort(key=lambda x: x['prob'], reverse=True)
+                # Bouw slips met unieke fixture_ids
+                if len(match_pool) < match_count:
+                    st.info("Niet genoeg unieke wedstrijden gevonden voor je criteria.")
+                else:
+                    # Sorteer op prob en maak combinaties
+                    match_pool.sort(key=lambda x: x['prob'], reverse=True)
                     
-                    slips = [pool[i:i + match_count] for i in range(0, len(pool), match_count)]
+                    # We maken slips door telkens X unieke matchen te pakken
+                    slips = [match_pool[i:i + match_count] for i in range(0, len(match_pool), match_count)]
                     
-                    for slip in slips[:8]:
+                    for slip in slips[:10]:
                         if len(slip) == match_count:
                             st.markdown('<div class="slip-card">', unsafe_allow_html=True)
-                            t_odd = 1.0
+                            total_odd = 1.0
                             for m in slip:
-                                t_odd *= m['odd']
+                                total_odd *= m['odd']
                                 c_m, c_o = st.columns([4, 1])
                                 with c_m:
                                     st.markdown(f"<span class='prob-tag'>{m['prob']}% Prob.</span>", unsafe_allow_html=True)
@@ -118,7 +120,7 @@ if st.button("🚀 GENEREER BEREKENDE SLIPS"):
                                 with c_o:
                                     st.markdown(f"<div class='odd-badge'>{m['odd']}</div>", unsafe_allow_html=True)
                                 st.divider()
-                            st.subheader(f"Totaal Odds: @{round(t_odd, 2)}")
+                            st.subheader(f"Slip Totaal: @{round(total_odd, 2)}")
                             st.markdown('</div>', unsafe_allow_html=True)
     except Exception as e:
-        st.error(f"Systeemfout: {e}")
+        st.error(f"Fout: {e}")
