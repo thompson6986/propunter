@@ -5,21 +5,37 @@ from datetime import datetime, timedelta
 import pytz
 import time
 
-# --- DATABASE / PERSISTENCE (Firestore) ---
-# Initialisatie van de cloud-verbinding voor een professionele workflow
-try:
-    from google.cloud import firestore
-    if "firebase" in st.secrets:
-        db = firestore.Client.from_service_account_info(dict(st.secrets["firebase"]))
-        HAS_DB = True
-    else:
-        db = None
-        HAS_DB = False
-except Exception:
-    HAS_DB = False
-    db = None
+# --- DEBUG & DATABASE INITIALISATIE ---
+st.sidebar.header("🛠️ Debug Console")
 
-# --- CONFIGURATIE ---
+HAS_DB = False
+db = None
+
+# Stap 1: Check of de 'firebase' sectie überhaupt bestaat
+if "firebase" in st.secrets:
+    st.sidebar.success("✅ 'firebase' sectie gevonden in Secrets")
+    
+    # Stap 2: Check of de essentiële velden aanwezig zijn
+    required_fields = ["project_id", "private_key", "client_email"]
+    missing_fields = [f for f in required_fields if f not in st.secrets["firebase"]]
+    
+    if not missing_fields:
+        try:
+            from google.cloud import firestore
+            # We maken een kopie van de dict om mee te werken
+            creds = dict(st.secrets["firebase"])
+            db = firestore.Client.from_service_account_info(creds)
+            HAS_DB = True
+            st.sidebar.success("🚀 Firestore Verbinding Geslaagd!")
+        except Exception as e:
+            st.sidebar.error(f"❌ Verbindingsfout: {str(e)[:100]}")
+    else:
+        st.sidebar.error(f"⚠️ Mist velden: {', '.join(missing_fields)}")
+else:
+    st.sidebar.error("❌ Geen [firebase] gevonden in st.secrets")
+    st.sidebar.info("Beschikbare secties: " + ", ".join(st.secrets.keys()))
+
+# --- REST VAN JE CONFIGURATIE ---
 API_KEY = "0827af58298b4ce09f49d3b85e81818f"
 BASE_URL = "https://v3.football.api-sports.io"
 TIMEZONE = "Europe/Brussels"
