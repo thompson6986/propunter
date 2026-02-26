@@ -5,6 +5,33 @@ from datetime import datetime
 import pytz
 import time
 
+# --- FORCEER DATABASE CONNECTIE ---
+HAS_DB = False
+db = None
+
+try:
+    # We proberen beide manieren van importeren
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+    
+    if "firebase" in st.secrets:
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(dict(st.secrets["firebase"]))
+            firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        HAS_DB = True
+        st.sidebar.success("🚀 Cloud Verbonden!")
+except Exception as e:
+    st.sidebar.error(f"⚠️ Verbindingsfout: {str(e)[:50]}")
+    # Fallback naar de oude methode als firebase-admin faalt
+    try:
+        from google.cloud import firestore
+        db = firestore.Client.from_service_account_info(dict(st.secrets["firebase"]))
+        HAS_DB = True
+        st.sidebar.success("🚀 Cloud Verbonden (Alt)!")
+    except:
+        HAS_DB = False
+
 # --- DATABASE INITIALISATIE ---
 HAS_DB = False
 db = None
