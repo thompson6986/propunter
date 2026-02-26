@@ -4,7 +4,6 @@ import requests
 from datetime import datetime
 import pytz
 import time
-import random
 
 # --- CONFIG & STYLING ---
 st.set_page_config(page_title="Professional Parlay Builder", page_icon="📈", layout="wide")
@@ -47,7 +46,8 @@ if st.button("🚀 GENEREER PARLAYS"):
     try:
         with st.spinner("Scannen op toekomstige unieke wedstrijden..."):
             today = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
-            fix_res = requests.get(f"{BASE_URL}/fixtures", headers=headers, params={'date': today, 'status': 'NS'}) # NS = Not Started
+            # Filter op 'NS' (Not Started) om lopende wedstrijden te vermijden
+            fix_res = requests.get(f"{BASE_URL}/fixtures", headers=headers, params={'date': today, 'status': 'NS'}) 
             fix_data = fix_res.json()
 
             if not fix_data.get('response'):
@@ -56,14 +56,13 @@ if st.button("🚀 GENEREER PARLAYS"):
                 now_ts = int(time.time())
                 t_limit = {"Volgende 1 uur": 1, "Volgende 2 uur": 2, "Volgende 6 uur": 6, "Vandaag": 24}[time_window]
                 
-                # Verzamel odds per unieke wedstrijd
                 match_pool = []
                 for f in fix_data['response']:
                     ts = f['fixture']['timestamp']
                     diff_h = (ts - now_ts) / 3600
                     
-                    # Alleen strikt in de toekomst en binnen venster
-                    if 0.05 <= diff_h <= t_limit: 
+                    # Alleen strikt in de toekomst (minimaal 2 min marge) en binnen venster
+                    if 0.03 <= diff_h <= t_limit: 
                         f_id = f['fixture']['id']
                         
                         # Haal odds voor deze specifieke fixture
@@ -75,35 +74,35 @@ if st.button("🚀 GENEREER PARLAYS"):
                             highest_prob = 0
                             
                             for bm in o_data['response'][0]['bookmakers']:
-                                for bet in bm['bets']:
-                                    for val in bet['values']:
-                                        odd = float(val['odd'])
-                                        prob = round((1/odd) * 100 + 4.5, 1) # Model kans
-                                        
-                                        if min_odd_val <= odd <= max_odd_item and prob >= min_prob_val:
-                                            # We bewaren alleen de 'beste' bet per wedstrijd voor de pool
-                                            if prob > highest_prob:
-                                                highest_prob = prob
-                                                best_bet_for_match = {
-                                                    "fixture_id": f_id,
-                                                    "match": f"{f['teams']['home']['name']} vs {f['teams']['away']['name']}",
-                                                    "market": f"{bet['name']}: {val['value']}",
-                                                    "odd": odd,
-                                                    "prob": prob,
-                                                    "time": datetime.fromtimestamp(ts, TIMEZONE).strftime('%H:%M'),
-                                                    "league": f['league']['name']
-                                                }
+                                # Focus op betrouwbare bookmakers voor stabiele odds
+                                if bm['name'] in ['Bet365', '1xBet', 'Bwin']:
+                                    for bet in bm['bets']:
+                                        for val in bet['values']:
+                                            odd = float(val['odd'])
+                                            # Model probability berekening
+                                            prob = round((1/odd) * 100 + 4.5, 1) 
+                                            
+                                            # Gebruik de gecorrigeerde variabele 'max_odd_val'
+                                            if min_odd_val <= odd <= max_odd_val and prob >= min_prob_val:
+                                                if prob > highest_prob:
+                                                    highest_prob = prob
+                                                    best_bet_for_match = {
+                                                        "fixture_id": f_id,
+                                                        "match": f"{f['teams']['home']['name']} vs {f['teams']['away']['name']}",
+                                                        "market": f"{bet['name']}: {val['value']}",
+                                                        "odd": odd,
+                                                        "prob": prob,
+                                                        "time": datetime.fromtimestamp(ts, TIMEZONE).strftime('%H:%M'),
+                                                        "league": f['league']['name']
+                                                    }
                             if best_bet_for_match:
                                 match_pool.append(best_bet_for_match)
 
                 # Bouw slips met unieke fixture_ids
                 if len(match_pool) < match_count:
-                    st.info("Niet genoeg unieke wedstrijden gevonden voor je criteria.")
+                    st.info(f"Niet genoeg unieke wedstrijden gevonden ({len(match_pool)}) voor je criteria.")
                 else:
-                    # Sorteer op prob en maak combinaties
                     match_pool.sort(key=lambda x: x['prob'], reverse=True)
-                    
-                    # We maken slips door telkens X unieke matchen te pakken
                     slips = [match_pool[i:i + match_count] for i in range(0, len(match_pool), match_count)]
                     
                     for slip in slips[:10]:
