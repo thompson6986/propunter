@@ -2,161 +2,148 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime
-import pytz
 import time
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-# --- CONFIG ---
-st.set_page_config(page_title="ProPunter Master V24", page_icon="⚽", layout="wide")
-TIMEZONE = "Europe/Brussels"
+# --- CONFIG & STYLING ---
+st.set_page_config(page_title="OddAlerts Pro", page_icon="🔔", layout="wide")
 
-# JOUW API-FOOTBALL KEY (van dashboard.api-football.com)
+# Custom CSS voor de OddAlerts Look
+st.markdown("""
+    <style>
+    .main { background-color: #0e1117; }
+    .stMetric { background-color: #1e2127; padding: 15px; border-radius: 10px; border: 1px solid #30363d; }
+    .bet-card { 
+        background-color: #161b22; 
+        padding: 20px; 
+        border-radius: 12px; 
+        border-left: 5px solid #238636;
+        margin-bottom: 15px;
+        border-right: 1px solid #30363d;
+        border-top: 1px solid #30363d;
+        border-bottom: 1px solid #30363d;
+    }
+    .status-live { color: #238636; font-weight: bold; font-size: 0.8rem; }
+    .prob-high { color: #2ea043; font-weight: bold; }
+    .prob-mid { color: #d29922; font-weight: bold; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- CONSTANTEN ---
 API_KEY = "0827af58298b4ce09f49d3b85e81818f" 
 BASE_URL = "https://v3.football.api-sports.io"
 
 # --- DB INIT ---
-HAS_DB = False
-db = None
-if "firebase" in st.secrets:
-    try:
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(dict(st.secrets["firebase"]))
-            firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        HAS_DB = True
-    except: pass
-
-# --- HELPERS ---
-def auto_save(u_id):
-    if HAS_DB and u_id:
-        try:
-            db.collection("users").document(u_id).set({
-                "bankroll": st.session_state.bankroll,
-                "active_bets": st.session_state.active_bets,
-                "last_update": datetime.now(pytz.timezone(TIMEZONE))
-            })
-        except: pass
-
-def load_data(u_id):
-    if HAS_DB and u_id:
-        try:
-            doc = db.collection("users").document(u_id).get()
-            if doc.exists:
-                d = doc.to_dict()
-                return d.get("bankroll", 1000.0), d.get("active_bets", [])
-        except: pass
-    return 1000.0, []
+if "firebase" in st.secrets and not firebase_admin._apps:
+    cred = credentials.Certificate(dict(st.secrets["firebase"]))
+    firebase_admin.initialize_app(cred)
+db = firestore.client() if firebase_admin._apps else None
 
 # --- STATE ---
 if 'bankroll' not in st.session_state: st.session_state.bankroll = 1000.0
 if 'active_bets' not in st.session_state: st.session_state.active_bets = []
-if 'gen_slips' not in st.session_state: st.session_state.gen_slips = {}
+if 'slips' not in st.session_state: st.session_state.slips = {}
 
-# --- SIDEBAR ---
+# --- SIDEBAR (CONTROLS) ---
 with st.sidebar:
-    st.title("⚽ ProPunter Master")
-    st.caption("Provider: API-Football ✅")
-    user_id = st.text_input("User ID", placeholder="bijv. pro_punter_01")
+    st.title("🔔 OddAlerts Dashboard")
+    user_id = st.text_input("Punter ID", value="pro_user_1")
     
-    col1, col2 = st.columns(2)
-    if col1.button("📥 Laad Data"):
-        if user_id:
-            st.session_state.bankroll, st.session_state.active_bets = load_data(user_id)
-            st.rerun()
-    if col2.button("✨ Init Cloud"):
-        if user_id: auto_save(user_id); st.success("Cloud OK")
-
     st.divider()
-    st.metric("Liquid Saldo", f"€{st.session_state.bankroll:.2f}")
-    min_prob = st.slider("Min. Slaagkans (%)", 5, 95, 15)
-
-    if st.button("🗑️ /Clear & Refund"):
-        refund = sum(float(b.get('Inzet', 0)) for b in st.session_state.active_bets)
+    st.metric("BANKROLL", f"€{st.session_state.bankroll:.2f}")
+    min_pct = st.slider("Min. Probability %", 10, 90, 25)
+    
+    if st.button("🗑️ RESET & REFUND"):
+        refund = sum(float(b['Inzet']) for b in st.session_state.active_bets)
         st.session_state.bankroll += refund
         st.session_state.active_bets = []
-        if user_id: auto_save(user_id)
+        st.success("Bankroll hersteld.")
         st.rerun()
 
-# --- MAIN ---
-t1, t2, t3 = st.tabs(["⚡ Pro Generator", "📊 Portfolio", "📉 Live Scores"])
+# --- MAIN INTERFACE ---
+col_head, col_action = st.columns([3, 1])
+with col_head:
+    st.title("Market Scanner")
+    st.caption(f"📅 {datetime.now().strftime('%d %B %Y')} | API Status: 🟢 Active (7500 req/d)")
 
-with t1:
-    st.header("⚡ Live Scanner (API-Football)")
-    
-    if st.button("🚀 SCAN ALLE MARKTEN"):
-        with st.spinner("Data ophalen via API-Football..."):
-            headers = {
-                'x-apisports-key': API_KEY,
-                'x-rapidapi-host': 'v3.football.api-sports.io'
-            }
-            # We halen odds op voor de wedstrijden van vandaag
-            params = {'date': datetime.now().strftime('%Y-%m-%d')}
+with col_action:
+    if st.button("🚀 SCAN LIVE MARKETS", use_container_width=True):
+        headers = {'x-apisports-key': API_KEY, 'x-rapidapi-host': 'v3.football.api-sports.io'}
+        params = {'date': datetime.now().strftime('%Y-%m-%d')}
+        
+        try:
+            r = requests.get(f"{BASE_URL}/odds", headers=headers, params=params)
+            data = r.json()
             
-            try:
-                r = requests.get(f"{BASE_URL}/odds", headers=headers, params=params)
-                data = r.json()
+            if r.status_code == 200 and data.get('response'):
+                targets = [1.5, 2.0, 3.0, 5.0]
+                new_slips = {}
                 
-                if r.status_code == 200 and data.get('response'):
-                    targets = [1.5, 2.0, 3.0, 5.0]
-                    found = {}
-                    
-                    for target in targets:
-                        best_match, min_diff = None, 1.0
-                        for item in data['response']:
-                            match_name = f"{item['fixture']['timezone']} - {item['league']['name']}"
-                            # API-Football structureert odds per bookmaker
-                            for bookmaker in item['bookmakers']:
-                                # We paken de eerste grote bookmaker (bijv. 1xBet of Bet365)
-                                for bet in bookmaker['bets']:
-                                    if bet['name'] in ["Match Winner", "Goals Over/Under", "Both Teams Score"]:
-                                        for value in bet['values']:
-                                            odd = float(value['odd'])
-                                            prob = (1/odd)*100
-                                            diff = abs(odd - target)
-                                            if diff < min_diff and prob >= min_prob:
-                                                min_diff = diff
-                                                best_match = {
-                                                    "match": f"{item['fixture']['id']} - {item['league']['name']}",
-                                                    "odd": odd,
-                                                    "markt": f"{bet['name']}: {value['value']}",
-                                                    "tijd": "Vandaag",
-                                                    "prob": round(prob, 1)
-                                                }
-                        if best_match: found[target] = best_match
-                    
-                    st.session_state.gen_slips = found
-                    st.success("Scan voltooid!")
-                else:
-                    st.error(f"Fout: {data.get('errors') or 'Geen data gevonden voor vandaag'}")
-            except Exception as e:
-                st.error(f"Connectiefout: {e}")
+                for t in targets:
+                    best_match = None
+                    best_diff = 1.0
+                    for item in data['response']:
+                        for bm in item['bookmakers']:
+                            if bm['name'] in ['Bet365', '1xBet', 'Bwin']:
+                                for bet in bm['bets']:
+                                    for val in bet['values']:
+                                        odd = float(val['odd'])
+                                        prob = (1/odd)*100
+                                        diff = abs(odd - t)
+                                        if diff < best_diff and prob >= min_pct:
+                                            best_diff = diff
+                                            best_match = {
+                                                "teams": f"{item['fixture']['timezone']} | {item['league']['name']}",
+                                                "match": f"{item['league']['country']} - {item['league']['name']}",
+                                                "target_odd": t,
+                                                "live_odd": odd,
+                                                "market": f"{bet['name']}: {val['value']}",
+                                                "prob": round(prob, 1)
+                                            }
+                    if best_match: new_slips[t] = best_match
+                st.session_state.slips = new_slips
+        except: st.error("API Connectie fout.")
 
-    # DISPLAY 4 KOLOMMEN
-    if st.session_state.gen_slips:
-        cols = st.columns(4)
-        for i, t in enumerate([1.5, 2.0, 3.0, 5.0]):
-            with cols[i]:
-                if t in st.session_state.gen_slips:
-                    info = st.session_state.gen_slips[t]
-                    st.markdown(f"### Target {t}")
-                    st.metric("Odd", f"@{info['odd']}")
-                    st.info(info['markt'])
-                    st.caption(f"{info['prob']}% kans")
-                    stake = st.number_input(f"Inzet", min_value=1.0, value=10.0, key=f"s_{t}")
-                    if st.button(f"Bevestig", key=f"b_{t}"):
-                        if st.session_state.bankroll >= stake:
-                            st.session_state.bankroll -= stake
-                            st.session_state.active_bets.append({
-                                "Match": info['match'], "Odd": info['odd'], "Inzet": stake, 
-                                "Markt": info['markt'], "Score": "Live"
-                            })
-                            if user_id: auto_save(user_id)
-                            st.rerun()
+# --- DISPLAY GRID ---
+if st.session_state.slips:
+    cols = st.columns(4)
+    for i, t in enumerate([1.5, 2.0, 3.0, 5.0]):
+        with cols[i]:
+            if t in st.session_state.slips:
+                s = st.session_state.slips[t]
+                prob_class = "prob-high" if s['prob'] > 50 else "prob-mid"
+                
+                st.markdown(f"""
+                <div class="bet-card">
+                    <span class="status-live">● TARGET @{t}</span>
+                    <h3 style="margin: 10px 0;">@{s['live_odd']}</h3>
+                    <p style="font-size: 0.9rem; color: #8b949e;">{s['teams']}</p>
+                    <p style="font-weight: bold;">{s['market']}</p>
+                    <p class="{prob_class}">Model Probability: {s['prob']}%</p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                stake = st.number_input(f"Stake €", min_value=1.0, value=10.0, key=f"stake_{t}")
+                if st.button(f"PLACE BET @{s['live_odd']}", key=f"btn_{t}", use_container_width=True):
+                    if st.session_state.bankroll >= stake:
+                        st.session_state.bankroll -= stake
+                        st.session_state.active_bets.append({
+                            "Match": s['teams'], "Odd": s['live_odd'], "Inzet": stake, "Markt": s['market']
+                        })
+                        st.toast("Bet Added to Portfolio!")
+                        st.rerun()
 
-with t2:
-    if st.session_state.active_bets:
-        st.table(pd.DataFrame(st.session_state.active_bets))
+st.divider()
 
-with t3:
-    st.write("Live scores worden hier geladen zodra de wedstrijden starten.")
+# --- PORTFOLIO SECTION ---
+st.subheader("📊 Active Alert Portfolio")
+if st.session_state.active_bets:
+    for b in st.session_state.active_bets:
+        with st.expander(f"⚽ {b['Match']} | @{b['Odd']} | €{b['Inzet']}"):
+            c1, c2, c3 = st.columns(3)
+            c1.write(f"**Markt:** {b['Markt']}")
+            c2.write(f"**Status:** 🏃 In Play")
+            c3.button("Cash Out (Fix)", key=f"cash_{time.time()}")
+else:
+    st.info("No active alerts set.")
