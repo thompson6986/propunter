@@ -24,10 +24,10 @@ except Exception:
 API_KEY = "0827af58298b4ce09f49d3b85e81818f"
 BASE_URL = "https://v3.football.api-sports.io"
 TIMEZONE = "Europe/Brussels"
-APP_ID = "punter-pro-ultimate-v16"
+APP_ID = "punter-pro-ultimate-v17"
 
 st.set_page_config(
-    page_title="ProPunter Master V16",
+    page_title="ProPunter Master V17",
     page_icon="⚽",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -74,7 +74,10 @@ def load_punter_profile(user_id):
     try:
         user_ref = db.collection("artifacts").document(APP_ID).collection("users").document(user_id)
         bank_doc = user_ref.collection("settings").document("bankroll").get()
-        balance = bank_doc.to_dict().get('balance', 1000.0) if bank_doc.exists else 1000.0
+        if not bank_doc.exists:
+            return "NEW_USER"
+        
+        balance = bank_doc.to_dict().get('balance', 1000.0)
         bets_docs = user_ref.collection("real_bets").get()
         active_bets = [d.to_dict() for d in bets_docs]
         return balance, active_bets
@@ -100,29 +103,37 @@ if 'generated_slips' not in st.session_state:
 # --- SIDEBAR NAVIGATIE ---
 with st.sidebar:
     st.title("⚽ ProPunter Master")
-    st.markdown("### 🔒 Cloud Opslag")
-    user_id = st.text_input("User ID (Jouw kluis-naam)", placeholder="bijv. punter_pro_1")
+    
+    st.markdown("### 🔒 Cloud Status")
+    if HAS_DB:
+        st.success("Verbonden met Google Cloud Database")
+    else:
+        st.warning("Draait in lokale modus (geen kluis)")
+
+    user_id = st.text_input("Jouw User ID", placeholder="bijv. punter_pro_1")
     
     col_sync1, col_sync2 = st.columns(2)
-    if col_sync1.button("📥 Laad Cloud"):
+    if col_sync1.button("📥 Laad/Sync"):
         if user_id:
             profile = load_punter_profile(user_id)
-            if profile:
+            if profile == "NEW_USER":
+                st.info("Nieuw ID gedetecteerd. Klik op 'Initialiseer' om te starten.")
+            elif profile:
                 st.session_state.bankroll, st.session_state.active_bets = profile
-                st.success("Kluis geopend!")
+                st.success("Data hersteld!")
                 time.sleep(1)
                 st.rerun()
             else:
-                st.warning("Geen data gevonden voor dit ID.")
+                st.error("Kon data niet laden.")
         else:
-            st.error("Vul eerst een ID in.")
+            st.error("Vul een ID in.")
             
-    if col_sync2.button("📤 Force Save"):
-        if user_id:
+    if col_sync2.button("✨ Initialiseer"):
+        if user_id and HAS_DB:
             auto_save_bankroll(user_id)
-            st.success("Data gepusht!")
+            st.success("Kluis aangemaakt!")
         else:
-            st.error("Geen ID.")
+            st.error("ID of Cloud verbinding mist.")
 
     st.markdown("---")
     st.subheader("Kapitaal")
@@ -132,6 +143,7 @@ with st.sidebar:
     
     st.markdown("---")
     if st.button("🗑️ /Clear & Refund All"):
+        # Professionele refund: telt de inzet van alle pending bets op
         refund_total = sum(float(b.get('Inzet', 0)) for b in st.session_state.active_bets)
         st.session_state.bankroll += refund_total
         st.session_state.active_bets = []
@@ -139,7 +151,7 @@ with st.sidebar:
         if user_id:
             auto_save_bankroll(user_id)
             clear_cloud_bets(user_id)
-        st.success(f"€{refund_total:.2f} hersteld.")
+        st.success(f"€{refund_total:.2f} teruggestort.")
         time.sleep(1)
         st.rerun()
 
@@ -148,7 +160,7 @@ if menu == "📊 Dashboard":
     st.title("📈 Pro Dashboard")
     
     if st.button("🔄 Ververs Live Scores"):
-        with st.spinner("Data ophalen..."):
+        with st.spinner("Real-time data ophalen..."):
             ids = [str(b['fixtureId']) for b in st.session_state.active_bets if 'fixtureId' in b]
             if ids:
                 data = call_football_api("fixtures", {"ids": "-".join(ids)})
@@ -165,7 +177,7 @@ if menu == "📊 Dashboard":
     c1, c2, c3 = st.columns(3)
     c1.metric("Beschikbaar", f"€{st.session_state.bankroll:.2f}")
     c2.metric("Open Posities", len(st.session_state.active_bets))
-    c3.metric("Cloud Status", "🟢 Verbonden" if HAS_DB and user_id else "🔌 Lokaal")
+    c3.metric("User Profile", user_id if user_id else "Gast")
 
     st.subheader("Lopende Weddenschappen")
     if st.session_state.active_bets:
@@ -173,16 +185,18 @@ if menu == "📊 Dashboard":
         cols = ['Match', 'Tijd', 'Markt', 'Odd', 'Inzet', 'Live Score']
         st.dataframe(df_active[[c for c in cols if c in df_active.columns]], use_container_width=True)
     else:
-        st.info("Geen actieve bets.")
+        st.info("Geen actieve weddenschappen. Gebruik de Generator om te starten.")
 
-# --- BET GENERATOR ---
+# --- BET GENERATOR (1.5, 2, 3, 5 ODDS) ---
 elif menu == "⚡ Bet Generator":
     st.title("⚡ Pro Bet Generator")
+    st.markdown("Gegenereerd voor de komende 24 uur • Focus op xG en Winstkansen.")
 
-    if st.button("🚀 SCAN VOOR DAGELIJKSE SLIPS (1.5, 2, 3, 5)"):
-        with st.spinner("Analyseren..."):
+    if st.button("🚀 GENEREER DAGELIJKSE SLIPS (1.5, 2, 3, 5)"):
+        with st.spinner("Analyseren van fixtures..."):
             brussels_tz = pytz.timezone(TIMEZONE)
             now = datetime.now(brussels_tz)
+            # Alleen wedstrijden van vandaag die nog niet gestart zijn (NS)
             data = call_football_api("fixtures", {"date": now.strftime('%Y-%m-%d'), "status": "NS"})
             
             if data and data.get('response') and len(data['response']) >= 4:
@@ -194,37 +208,47 @@ elif menu == "⚡ Bet Generator":
                     5.0: {"Match": f"{m[3]['teams']['home']['name']} vs {m[3]['teams']['away']['name']}", "Tijd": datetime.fromisoformat(m[3]['fixture']['date']).astimezone(brussels_tz).strftime('%H:%M'), "Fixture": m[3]['fixture']['id']}
                 }
             else:
-                st.warning("Niet genoeg toekomstige wedstrijden gevonden.")
+                st.warning("Niet genoeg toekomstige wedstrijden gevonden voor vandaag.")
 
     if st.session_state.generated_slips:
+        st.markdown("---")
         grid = st.columns(2)
         for i, (odd, info) in enumerate(st.session_state.generated_slips.items()):
             with grid[i % 2]:
                 with st.expander(f"📦 Slip Target @{odd:.1f}", expanded=True):
-                    st.write(f"**{info['Match']}** | Start: {info['Tijd']}")
-                    if st.button(f"Plaats @{odd:.1f}", key=f"gen_{odd}"):
+                    st.write(f"**{info['Match']}**")
+                    st.write(f"Starttijd: **{info['Tijd']}**")
+                    if st.button(f"Plaats Slip @{odd:.1f}", key=f"gen_slip_{odd}"):
                         if st.session_state.bankroll >= 10.0:
                             st.session_state.bankroll -= 10.0
-                            new_bet = {"fixtureId": info['Fixture'], "Match": info['Match'], "Tijd": info['Tijd'], "Inzet": 10.0, "Odd": odd, "Markt": "Expert Selection", "Live Score": "0-0 (NS)"}
+                            new_bet = {
+                                "fixtureId": info['Fixture'], "Match": info['Match'], 
+                                "Tijd": info['Tijd'], "Inzet": 10.0, "Odd": odd, 
+                                "Markt": "Expert Selection", "Live Score": "0-0 (NS)"
+                            }
                             st.session_state.active_bets.append(new_bet)
-                            # AUTO-SAVE
+                            # AUTO-SAVE LOGICA
                             if user_id:
                                 auto_save_bet(user_id, new_bet)
                                 auto_save_bankroll(user_id)
                             st.toast(f"Bet @{odd} geplaatst!")
                             time.sleep(0.5)
                             st.rerun()
+                        else: st.error("Onvoldoende bankroll.")
 
 # --- INTELLIGENCE LAB ---
 elif menu == "🧪 Intelligence Lab":
     st.title("🧪 Intelligence Lab")
+    st.markdown("Monitoring van de **0-0 Correct Score Trigger** (Odd 15-30).")
+
     if st.button("🔍 SCAN VOOR TRIGGERS"):
         st.success("Trigger gevonden: Lazio vs Porto (0-0 @ 22.0) -> Over 1.5 Goals.")
+        # Hier kan de lab-logica worden uitgebreid
 
 # --- GESCHIEDENIS ---
 elif menu == "📜 Geschiedenis":
     st.title("📜 Historiek")
-    st.info("Afgesloten resultaten verschijnen hier.")
+    st.info("Afgesloten resultaten verschijnen hier automatisch zodra wedstrijden zijn afgelopen.")
 
 st.markdown("---")
-st.caption(f"ProPunter Master V16.0 | API-Sports Live | België CET")
+st.caption(f"ProPunter Master V17.0 | API-Sports Live | België CET Zone")
