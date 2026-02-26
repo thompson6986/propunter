@@ -1,5 +1,6 @@
 streamlit
 requests
 pandas
-google-cloud-firestore
 pytz
+firebase-admin
+google-cloud-firestore==2.11.0
