@@ -1,12 +1,11 @@
 import streamlit as st
-import pd as pd
+import pandas as pd  # <--- Hier zat de fout, dit moet 'pandas' zijn
 import requests
 from datetime import datetime
 import pytz
 import time
 import firebase_admin
 from firebase_admin import credentials, firestore
-
 # --- CONFIGURATIE ---
 st.set_page_config(page_title="ProPunter Master V18.3", page_icon="⚽", layout="wide")
 TIMEZONE = "Europe/Brussels"
