@@ -8,8 +8,11 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 # --- CONFIGURATIE ---
-st.set_page_config(page_title="ProPunter Master V19.2", page_icon="⚽", layout="wide")
+st.set_page_config(page_title="ProPunter Master V20.1", page_icon="⚽", layout="wide")
 TIMEZONE = "Europe/Brussels"
+
+# INGEBAKKEN API KEY (7500 requests/dag)
+API_KEY = "0827af58298b4ce09f49d3b85e81818f"
 
 # --- DATABASE INITIALISATIE ---
 HAS_DB = False
@@ -23,7 +26,7 @@ if "firebase" in st.secrets:
         HAS_DB = True
     except: pass
 
-# --- HELPERS ---
+# --- DATABASE HELPERS ---
 def auto_save(user_id):
     if HAS_DB and user_id:
         try:
@@ -52,42 +55,42 @@ if 'generated_slips' not in st.session_state: st.session_state.generated_slips =
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("⚽ ProPunter Master")
-    st.subheader("🔑 API Instellingen")
+    st.caption("Auto-Key: ✅ Geactiveerd (7500 req/dag)")
     
-    # Gebruik hier je eigen key met 7500 requests
-    api_key_input = st.text_input("Odds API Key", value="0827af58298b4ce09f49d3b85e81818f", type="password")
     user_id = st.text_input("User ID", placeholder="punter_01")
     
-    c1, c2 = st.columns(2)
-    if c1.button("📥 Laad Data"):
+    col_l, col_i = st.columns(2)
+    if col_l.button("📥 Laad Data"):
         if user_id:
             st.session_state.bankroll, st.session_state.active_bets = load_data(user_id)
             st.rerun()
-    if c2.button("✨ Init Cloud"):
-        if user_id: auto_save(user_id); st.success("Verbonden!")
+    if col_i.button("✨ Init Cloud"):
+        if user_id: auto_save(user_id); st.success("Cloud Ready")
 
     st.divider()
     st.metric("Liquid Saldo", f"€{st.session_state.bankroll:.2f}")
-    min_prob = st.slider("Min. Slaagkans (%)", 10, 95, 20)
+    
+    st.subheader("🎯 Strategie")
+    min_prob = st.slider("Min. Slaagkans (%)", 5, 95, 20)
 
-    # DE VERBETERDE CLEAR FUNCTIE (REFUND)
+    # DE CLEAR & REFUND FUNCTIE
     if st.button("🗑️ /Clear & Refund All"):
-        refund_total = sum(float(b.get('Inzet', 0)) for b in st.session_state.active_bets)
-        st.session_state.bankroll += refund_total
+        refund = sum(float(b.get('Inzet', 0)) for b in st.session_state.active_bets)
+        st.session_state.bankroll += refund
         st.session_state.active_bets = []
         if user_id: auto_save(user_id)
-        st.success(f"€{refund_total:.2f} hersteld.")
-        time.sleep(1); st.rerun()
+        st.success(f"€{refund:.2f} hersteld!")
+        time.sleep(1)
+        st.rerun()
 
-# --- TABS ---
-t1, t2, t3 = st.tabs(["⚡ Pro Generator", "📊 Portefeuille", "📉 Live Scores"])
+# --- MAIN INTERFACE ---
+tab1, tab2, tab3 = st.tabs(["⚡ Pro Generator", "📊 Portefeuille", "📉 Live Center"])
 
-with t1:
-    st.header("⚡ Berekende Slips (Win, O/U, BTTS)")
+with tab1:
+    st.header("⚡ Live Scanner (Win, O/U, BTTS)")
     if st.button("🚀 SCAN ALLE MARKTEN"):
-        with st.spinner("Laden van 7500+ data punten..."):
-            # We halen alle voetbalwedstrijden op
-            url = f"https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey={api_key_input}&regions=eu&markets=h2h,totals,btts&oddsFormat=decimal"
+        with st.spinner("Data ophalen via API..."):
+            url = f"https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey={API_KEY}&regions=eu&markets=h2h,totals,btts&oddsFormat=decimal"
             try:
                 r = requests.get(url)
                 if r.status_code == 200:
@@ -95,8 +98,8 @@ with t1:
                     targets = [1.5, 2.0, 3.0, 5.0]
                     found = {}
                     for target in targets:
-                        best_match = None
-                        min_diff = 0.8
+                        match_found = None
+                        best_diff = 1.0 
                         for event in data:
                             for bm in event.get('bookmakers', []):
                                 for market in bm.get('markets', []):
@@ -104,55 +107,48 @@ with t1:
                                     for out in market['outcomes']:
                                         odds = out['price']
                                         prob = (1/odds)*100
-                                        if abs(odds - target) < min_diff and prob >= min_prob:
-                                            min_diff = abs(odds - target)
+                                        if abs(odds - target) < best_diff and prob >= min_prob:
+                                            best_diff = abs(odds - target)
                                             m_name = "WIN" if m_type == "h2h" else "O/U 2.5" if m_type == "totals" else "BTTS"
-                                            best_match = {
+                                            match_found = {
                                                 "match": f"{event['home_team']} vs {event['away_team']}",
                                                 "odd": odds, "markt": f"{m_name}: {out['name']}",
                                                 "tijd": datetime.fromisoformat(event['commence_time'].replace('Z', '')).strftime('%H:%M'),
                                                 "prob": round(prob, 1)
                                             }
-                        if best_match: found[target] = best_match
+                        if match_found: found[target] = match_found
                     st.session_state.generated_slips = found
                     st.success("Scanner Voltooid!")
-                else:
-                    st.error(f"API Fout {r.status_code}. Controleer of je key geactiveerd is.")
-            except: st.error("Kan geen verbinding maken met de server.")
+                else: st.error(f"Fout: {r.status_code}")
+            except: st.error("Netwerkfout.")
 
     if st.session_state.generated_slips:
         cols = st.columns(4)
         for i, (t, info) in enumerate(st.session_state.generated_slips.items()):
             with cols[i]:
-                st.subheader(f"Target {t}")
+                st.markdown(f"### Target {t}")
                 st.metric("Odds", f"@{info['odd']}")
                 st.write(f"**{info['match']}**")
                 st.info(info['markt'])
-                st.caption(f"🕒 {info['tijd']} | {info['prob']}% kans")
-                stake = st.number_input("Inzet", min_value=1.0, value=10.0, key=f"s_{t}")
-                if st.button(f"Zet In @{info['odd']}", key=f"b_{t}"):
+                st.caption(f"🕒 {info['tijd']} | {info['prob']}%")
+                stake = st.number_input(f"Inzet", min_value=1.0, value=10.0, key=f"s_{t}")
+                if st.button(f"Bevestig", key=f"b_{t}"):
                     if st.session_state.bankroll >= stake:
                         st.session_state.bankroll -= stake
                         st.session_state.active_bets.append({
                             "Match": info['match'], "Odd": info['odd'], "Inzet": stake, 
-                            "Markt": info['markt'], "Tijd": info['tijd'], "Score": "Live"
+                            "Markt": info['markt'], "Tijd": info['tijd'], "Score": "0-0"
                         })
                         if user_id: auto_save(user_id)
                         st.rerun()
 
-with t2:
+with tab2:
     if st.session_state.active_bets:
-        st.table(pd.DataFrame(st.session_state.active_bets))
-    else: st.info("Geen openstaande weddenschappen.")
+        st.dataframe(pd.DataFrame(st.session_state.active_bets), use_container_width=True)
 
-with t3:
-    st.header("📉 Real-time Score Monitoring")
+with tab3:
     if st.session_state.active_bets:
         for b in st.session_state.active_bets:
-            with st.expander(f"⚽ {b['Match']} ({b['Tijd']})", expanded=True):
-                c1, c2, c3 = st.columns(3)
-                c1.write(f"**Markt:** {b['Markt']}")
-                c2.write(f"**Odd:** @{b['Odd']}")
-                c3.write(f"**Score:** 0-0") # Hier kan later de live-score API aan
-                st.progress(0.0)
-    else: st.warning("Plaats eerst een bet om scores te volgen.")
+            st.write(f"**{b['Match']}** | {b['Markt']} | Score: {b['Score']}")
+            st.progress(0.1)
+            st.divider()
