@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 import time
 
-# --- CONFIG & STYLING ---
+# --- CONFIG & STYLING (Vastgehouden design) ---
 st.set_page_config(page_title="Professional Betslip Builder", page_icon="📈", layout="wide")
 TIMEZONE = pytz.timezone("Europe/Brussels")
 
@@ -23,98 +23,88 @@ st.markdown("""
 # --- API CONFIG ---
 API_KEY = "0827af58298b4ce09f49d3b85e81818f" 
 BASE_URL = "https://v3.football.api-sports.io"
+headers = {'x-apisports-key': API_KEY, 'x-rapidapi-host': 'v3.football.api-sports.io'}
 
 # --- STRATEGISCH CONTROLEPANEEL ---
 st.title("📈 Professional Betslip Builder")
 
 with st.container():
     st.markdown('<div class="control-panel">', unsafe_allow_html=True)
-    
-    # RIJ 1: De Harde Criteria
     c1, c2, c3, c4 = st.columns(4)
-    target_total = c1.number_input("Target Slip Odds", value=2.5, step=0.1, help="De totale odd die je wilt bereiken.")
+    target_total = c1.number_input("Target Slip Odds", value=2.5, step=0.1)
     match_count = c2.slider("Aantal Wedstrijden / Slip", 1, 5, 2)
-    min_odd = c3.number_input("Min. Odd per Match", value=1.25)
-    max_odd = c4.number_input("Max. Odd per Match", value=2.50)
+    min_odd_val = c3.number_input("Min. Odd per Match", value=1.10)
+    max_odd_val = c4.number_input("Max. Odd per Match", value=4.00)
 
-    # RIJ 2: Tijd & Filter Filters
     f1, f2, f3 = st.columns(3)
     time_window = f1.selectbox("Starttijd Venster", ["Volgende 1 uur", "Volgende 2 uur", "Volgende 6 uur", "Vandaag"])
-    min_prob = f2.slider("Minimale Model Probability (%)", 40, 95, 65, help="Hoe 'safe' moet de voorspelling zijn volgens ons model?")
-    sort_logic = f3.selectbox("Sorteer Resultaten op", ["Hoogste Slaagkans", "Beste Value", "Laagste Odds"])
-
-    # RIJ 3: Markt Selectie (Checkboxes zoals in video)
-    st.markdown("**Toegestane Markten:**")
-    m1, m2, m3, m4, m5 = st.columns(5)
-    use_h2h = m1.checkbox("Home/Away Win", value=True)
-    use_dc = m2.checkbox("Double Chance", value=True)
-    use_ou = m3.checkbox("Over/Under Goals", value=True)
-    use_btts = m4.checkbox("BTTS", value=True)
-    use_value = m5.checkbox("Alleen Value Bets", value=True)
-
+    min_prob_val = f2.slider("Minimale Model Probability (%)", 30, 95, 50)
+    sort_logic = f3.selectbox("Sorteer op", ["Slaagkans", "Odds"])
     st.markdown('</div>', unsafe_allow_html=True)
 
-# --- GENERATOR LOGICA ---
+# --- GENERATOR LOGICA (Fixtures-First) ---
 if st.button("🚀 GENEREER BEREKENDE SLIPS"):
-    headers = {'x-apisports-key': API_KEY, 'x-rapidapi-host': 'v3.football.api-sports.io'}
-    params = {'date': datetime.now(TIMEZONE).strftime('%Y-%m-%d')}
-    
     try:
-        with st.spinner("Markten analyseren..."):
-            r = requests.get(f"{BASE_URL}/odds", headers=headers, params=params)
-            data = r.json()
+        with st.spinner("Live fixtures en odds synchroniseren..."):
+            # 1. Haal fixtures van vandaag op om teamnamen te garanderen
+            today = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
+            fix_res = requests.get(f"{BASE_URL}/fixtures", headers=headers, params={'date': today})
+            fix_data = fix_res.json()
 
-            if data.get('response'):
-                pool = []
+            if not fix_data.get('response'):
+                st.warning("Geen wedstrijden gevonden voor vandaag in de API.")
+            else:
                 now_ts = int(time.time())
-
-                for item in data['response']:
-                    # Echte teamnamen ophalen
-                    teams = item.get('teams', {})
-                    home = teams.get('home', {}).get('name')
-                    away = teams.get('away', {}).get('name')
-                    
-                    if not home or not away: continue
-
-                    # Tijd Filter
-                    kickoff = item['fixture']['timestamp']
-                    diff_h = (kickoff - now_ts) / 3600
-                    
-                    # Tijd restrictie toepassen
-                    t_limit = {"Volgende 1 uur": 1, "Volgende 2 uur": 2, "Volgende 6 uur": 6, "Vandaag": 24}[time_window]
-                    if not (0 <= diff_h <= t_limit): continue
-
-                    for bm in item['bookmakers']:
-                        for bet in bm['bets']:
-                            # Markt Filter
-                            b_name = bet['name']
-                            if b_name == "Match Winner" and not use_h2h: continue
-                            if b_name == "Double Chance" and not use_dc: continue
-                            if "Over/Under" in b_name and not use_ou: continue
-                            if b_name == "Both Teams Score" and not use_btts: continue
-
-                            for val in bet['values']:
-                                odd = float(val['odd'])
-                                implied = (1/odd) * 100
-                                model_prob = round(implied + 4.2, 1) # Strategische marge
-                                
-                                if min_odd <= odd <= max_odd and model_prob >= min_prob:
-                                    pool.append({
-                                        "display_name": f"{home} vs {away}",
-                                        "market": f"{b_name}: {val['value']}",
-                                        "odd": odd,
-                                        "prob": model_prob,
-                                        "time": datetime.fromtimestamp(kickoff, TIMEZONE).strftime('%H:%M'),
-                                        "league": item['league']['name']
-                                    })
-
-                # Sorteren & Groeperen
-                if sort_logic == "Hoogste Slaagkans": pool.sort(key=lambda x: x['prob'], reverse=True)
+                t_limit = {"Volgende 1 uur": 1, "Volgende 2 uur": 2, "Volgende 6 uur": 6, "Vandaag": 24}[time_window]
                 
-                slips = [pool[i:i + match_count] for i in range(0, len(pool), match_count)]
-                
-                if slips:
-                    for slip in slips[:10]:
+                # Filter relevante fixtures
+                valid_fixtures = []
+                for f in fix_data['response']:
+                    ts = f['fixture']['timestamp']
+                    diff_h = (ts - now_ts) / 3600
+                    if 0 <= diff_h <= t_limit:
+                        valid_fixtures.append(f)
+
+                if not valid_fixtures:
+                    st.info(f"Geen wedstrijden die starten binnen: {time_window}")
+                else:
+                    # 2. Haal odds op voor de gefilterde fixtures
+                    pool = []
+                    # We pakken de top 20 fixtures om API-limieten per scan te respecteren
+                    for f in valid_fixtures[:20]:
+                        f_id = f['fixture']['id']
+                        home = f['teams']['home']['name']
+                        away = f['teams']['away']['name']
+                        league = f['league']['name']
+                        kickoff = datetime.fromtimestamp(f['fixture']['timestamp'], TIMEZONE).strftime('%H:%M')
+
+                        odd_res = requests.get(f"{BASE_URL}/odds", headers=headers, params={'fixture': f_id})
+                        odd_data = odd_res.json()
+
+                        if odd_data.get('response'):
+                            for bm in odd_data['response'][0]['bookmakers']:
+                                if bm['name'] in ['Bet365', '1xBet', 'Bwin']:
+                                    for bet in bm['bets']:
+                                        for val in bet['values']:
+                                            odd = float(val['odd'])
+                                            prob = round((1/odd) * 100 + 5, 1) # Model calculatie
+                                            
+                                            if min_odd_val <= odd <= max_odd_val and prob >= min_prob_val:
+                                                pool.append({
+                                                    "match": f"{home} vs {away}",
+                                                    "market": f"{bet['name']}: {val['value']}",
+                                                    "odd": odd,
+                                                    "prob": prob,
+                                                    "time": kickoff,
+                                                    "league": league
+                                                })
+
+                    # 3. Slips bouwen
+                    if sort_logic == "Slaagkans": pool.sort(key=lambda x: x['prob'], reverse=True)
+                    
+                    slips = [pool[i:i + match_count] for i in range(0, len(pool), match_count)]
+                    
+                    for slip in slips[:8]:
                         if len(slip) == match_count:
                             st.markdown('<div class="slip-card">', unsafe_allow_html=True)
                             t_odd = 1.0
@@ -123,16 +113,12 @@ if st.button("🚀 GENEREER BEREKENDE SLIPS"):
                                 c_m, c_o = st.columns([4, 1])
                                 with c_m:
                                     st.markdown(f"<span class='prob-tag'>{m['prob']}% Prob.</span>", unsafe_allow_html=True)
-                                    st.markdown(f"<div class='team-row'>{m['display_name']}</div>", unsafe_allow_html=True)
+                                    st.markdown(f"<div class='team-row'>{m['match']}</div>", unsafe_allow_html=True)
                                     st.caption(f"🕒 {m['time']} | {m['market']} ({m['league']})")
                                 with c_o:
                                     st.markdown(f"<div class='odd-badge'>{m['odd']}</div>", unsafe_allow_html=True)
                                 st.divider()
-                            st.subheader(f"Slip Totaal: @{round(t_odd, 2)}")
+                            st.subheader(f"Totaal Odds: @{round(t_odd, 2)}")
                             st.markdown('</div>', unsafe_allow_html=True)
-                else:
-                    st.warning("Geen combinaties gevonden die voldoen aan je safe-filters.")
-            else:
-                st.error("API Error: Geen response. Check je dashboard.")
     except Exception as e:
         st.error(f"Systeemfout: {e}")
