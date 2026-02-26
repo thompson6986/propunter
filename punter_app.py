@@ -8,8 +8,8 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 import random
 
-# --- CONFIG & STYLING (GEOPTIMALISEERD VOOR SMARTPHONE) ---
-st.set_page_config(page_title="Pro Punter Elite V64", page_icon="🕒", layout="wide")
+# --- CONFIG & STYLING ---
+st.set_page_config(page_title="Pro Punter Elite V65", page_icon="🕒", layout="wide")
 TIMEZONE = pytz.timezone("Europe/Brussels")
 
 st.markdown("""
@@ -25,12 +25,12 @@ st.markdown("""
     }
     .timer-badge { 
         color: #f85149; font-weight: bold; font-family: 'Roboto Mono', monospace; 
-        font-size: 0.9rem; animation: blinker 1.5s linear infinite; 
+        font-size: 1rem; animation: blinker 1.5s linear infinite; 
     }
-    .start-time { color: #8b949e; font-size: 0.8rem; font-family: monospace; }
+    .start-time { color: #8b949e; font-size: 0.85rem; font-family: monospace; font-weight: bold; }
     .score-badge { 
         background: #010409; color: #ffffff; padding: 6px 12px; border-radius: 6px; 
-        font-family: monospace; font-size: 1.2rem; border: 1px solid #30363d; min-width: 70px; text-align: center; 
+        font-family: monospace; font-size: 1.3rem; border: 1px solid #30363d; min-width: 75px; text-align: center; 
     }
     @keyframes blinker { 50% { opacity: 0; } }
     </style>
@@ -53,10 +53,10 @@ if 'gen_slips' not in st.session_state: st.session_state.gen_slips = []
 
 t1, t2, t3 = st.tabs(["🚀 GENERATOR", "📡 LIVE TRACKER", "🏟️ STADIUM"])
 
-# --- TAB 1: GENERATOR (Met behoud van filters) ---
+# --- TAB 1: GENERATOR ---
 with t1:
     st.markdown(f"💰 Saldo: **€{st.session_state.balance:.2f}**")
-    u_id = st.text_input("User ID", value="punter_01", key="user_id_input")
+    u_id = st.text_input("User ID", value="punter_01")
     
     if st.button("🚀 GENEREER NIEUWE SLIPS", use_container_width=True):
         try:
@@ -66,11 +66,8 @@ with t1:
             if data.get('response'):
                 pool = []
                 for f in data['response'][:50]:
-                    f_id = f['fixture']['id']
-                    # Starttijd berekenen
                     f_time = datetime.fromtimestamp(f['fixture']['timestamp'], TIMEZONE).strftime('%H:%M')
-                    
-                    o_res = requests.get(f"{BASE_URL}/odds", headers=headers, params={'fixture': f_id})
+                    o_res = requests.get(f"{BASE_URL}/odds", headers=headers, params={'fixture': f['fixture']['id']})
                     o_data = o_res.json()
                     if o_data.get('response'):
                         for bm in o_data['response'][0]['bookmakers']:
@@ -79,25 +76,27 @@ with t1:
                                     for val in bet['values']:
                                         if any(x in str(val['value']) for x in ["Asian", "Corner", "3.5", "4.5"]): continue
                                         pool.append({
-                                            "fixture_id": f_id,
+                                            "fixture_id": f['fixture']['id'],
                                             "match": f"{f['teams']['home']['name']} vs {f['teams']['away']['name']}",
                                             "market": f"{bet['name']}: {val['value']}",
                                             "odd": float(val['odd']),
                                             "start_time": f_time
                                         })
                 st.session_state.gen_slips = [random.sample(pool, 2) for _ in range(4)]
-        except: st.error("API Fout")
+        except: st.error("API Limit bereikt of geen data.")
 
     for i, slip in enumerate(st.session_state.gen_slips):
         st.markdown('<div class="slip-container">', unsafe_allow_html=True)
         t_odd = 1.0
         for m in slip:
             t_odd *= m['odd']
+            # VEILIGE WEERGAVE MET .get()
+            s_time = m.get('start_time', '??:??')
             st.markdown(f'''
                 <div class="match-row">
                     <div>
                         <div style="font-weight:bold;">{m['match']}</div>
-                        <div class="start-time">🕒 Start: {m['start_time']} | {m['market']}</div>
+                        <div class="start-time">🕒 {s_time} | {m['market']}</div>
                     </div>
                     <div class="score-badge">@{m['odd']}</div>
                 </div>
@@ -110,53 +109,53 @@ with t1:
                     "user_id": u_id, "timestamp": datetime.now(TIMEZONE),
                     "total_odd": round(t_odd,2), "matches": slip, "stake": stake
                 })
-                st.success("Opgeslagen!"); time.sleep(0.5); st.rerun()
+                st.success("Bet opgeslagen!"); time.sleep(0.5); st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
-# --- TAB 2: LIVE TRACKER (DE FIX) ---
+# --- TAB 2: LIVE TRACKER (MET FIX VOOR OUDE SLIPS) ---
 with t2:
-    st.markdown("### 📡 Live Tracker & Timer")
+    st.markdown("### 📡 Live Tracker")
     if db:
         docs = db.collection("saved_slips").where("user_id", "==", u_id).order_by("timestamp", direction=firestore.Query.DESCENDING).limit(8).get()
         
         if docs:
-            # Verzamel alle IDs voor 1 API call (efficiëntie)
+            # Verzamel alle IDs
             all_ids = [str(m['fixture_id']) for d in docs for m in d.to_dict().get('matches', [])]
             live_data = {}
             if all_ids:
                 res = requests.get(f"{BASE_URL}/fixtures", headers=headers, params={'ids': "-".join(all_ids)})
                 if res.status_code == 200:
-                    for f in res.json().get('response', []):
-                        live_data[f['fixture']['id']] = f
+                    for f in res.json().get('response', []): live_data[f['fixture']['id']] = f
 
             for doc in docs:
                 s = doc.to_dict(); s['id'] = doc.id
                 st.markdown('<div class="slip-container">', unsafe_allow_html=True)
-                st.markdown(f"**Slip @{s.get('total_odd')}** (Inzet: €{s.get('stake')})")
+                st.markdown(f"**Slip @{s.get('total_odd')}** | Inzet: €{s.get('stake', 10)}")
                 
                 for m in s.get('matches', []):
                     f_info = live_data.get(m['fixture_id'])
                     
-                    # Logica voor de Timer en Score
                     status_short = f_info['fixture']['status']['short'] if f_info else "NS"
                     elapsed = f_info['fixture']['status']['elapsed'] if f_info else None
                     h_goals = f_info['goals']['home'] if f_info and f_info['goals']['home'] is not None else 0
                     a_goals = f_info['goals']['away'] if f_info and f_info['goals']['away'] is not None else 0
                     
-                    # Bepaal wat we tonen als tijd/timer
+                    # VEILIGHEID: Als start_time ontbreekt in DB, gebruik 'NS'
+                    display_time = m.get('start_time', 'NS')
+
                     timer_html = ""
                     if status_short in ['1H', '2H', 'HT']:
-                        timer_html = f'<span class="timer-badge">🔴 {elapsed}\'</span>'
+                        timer_html = f'<div class="timer-badge">🔴 LIVE {elapsed}\'</div>'
                     elif status_short == 'FT':
-                        timer_html = '<span style="color:#3fb950; font-weight:bold;">🏁 FT</span>'
+                        timer_html = '<div style="color:#3fb950; font-weight:bold;">🏁 FINISHED</div>'
                     else:
-                        timer_html = f'<span class="start-time">🕒 {m.get("start_time", "NS")}</span>'
+                        timer_html = f'<div class="start-time">🕒 Start: {display_time}</div>'
 
                     st.markdown(f'''
                         <div class="match-row">
                             <div>
-                                <div style="font-weight:bold;">{m['match']}</div>
-                                <div style="font-size:0.8rem; color:#8b949e;">{m['market']}</div>
+                                <div style="font-weight:bold; color:#f0f6fc;">{m['match']}</div>
+                                <div style="font-size:0.8rem; color:#8b949e; margin-bottom:4px;">{m['market']}</div>
                                 {timer_html}
                             </div>
                             <div class="score-badge">{h_goals} - {a_goals}</div>
@@ -166,8 +165,7 @@ with t2:
                 if st.button("🗑️ Verwijder", key=f"del_{s['id']}", use_container_width=True):
                     db.collection("saved_slips").document(s['id']).delete(); st.rerun()
                 st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.info("Geen actieve slips gevonden.")
+        else: st.info("Geen slips.")
 
 with t3:
     components.html(f"""
