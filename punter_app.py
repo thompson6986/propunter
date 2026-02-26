@@ -6,7 +6,6 @@ import pytz
 import time
 
 # --- FIRESTORE PERSISTENCE ---
-# We proberen de database te laden. Als dit faalt, blijft de app in 'Lokaal' mode.
 try:
     from google.cloud import firestore
     HAS_FIRESTORE_LIB = True
@@ -17,10 +16,10 @@ except ImportError:
 API_KEY = "0827af58298b4ce09f49d3b85e81818f"
 BASE_URL = "https://v3.football.api-sports.io"
 TIMEZONE = "Europe/Brussels"
-APP_ID = "propunter-v9-pro"
+APP_ID = "propunter-v10-pro"
 
 st.set_page_config(
-    page_title="ProPunter Ultimate V9",
+    page_title="ProPunter Ultimate V10",
     page_icon="⚽",
     layout="wide"
 )
@@ -94,7 +93,10 @@ if 'found_match' not in st.session_state:
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("⚽ ProPunter Master")
-    user_id = st.text_input("User ID", placeholder="Naam voor cloud opslag...")
+    
+    st.markdown("### 🔑 Database Toegang")
+    st.info("Bedenk zelf een uniek ID (bijv. je naam) om je data op te slaan.")
+    user_id = st.text_input("Verzin je User ID:", placeholder="bijv. punter_pro_jan")
     
     if st.button("🔄 Data Herstellen / Sync"):
         if user_id:
@@ -105,7 +107,7 @@ with st.sidebar:
                 st.session_state.virtual_lab = lab
                 st.success("Synchronisatie voltooid!")
         else:
-            st.warning("Voer een User ID in.")
+            st.warning("Voer eerst een zelfverzonnen ID in.")
 
     st.markdown("---")
     st.metric("Saldo", f"€{st.session_state.bankroll:.2f}")
@@ -114,7 +116,6 @@ with st.sidebar:
     
     st.markdown("---")
     if st.button("🗑️ /Clear & Refund"):
-        # Professionele refund logica: alle inzet van openstaande bets terugstorten
         refund = sum(float(b.get('Inzet', 0)) for b in st.session_state.active_bets)
         st.session_state.bankroll += refund
         st.session_state.active_bets = []
@@ -127,7 +128,6 @@ with st.sidebar:
 if menu == "📊 Dashboard":
     st.title("📈 Punter Dashboard")
     
-    # LIVE SCORE UPDATER
     if st.button("🔄 Check Live Scores & Status"):
         with st.spinner("Live data ophalen..."):
             ids = [str(b['fixtureId']) for b in st.session_state.active_bets if 'fixtureId' in b]
@@ -146,8 +146,15 @@ if menu == "📊 Dashboard":
     col1, col2, col3 = st.columns(3)
     col1.metric("Beschikbaar", f"€{st.session_state.bankroll:.2f}")
     col2.metric("Open Bets", len(st.session_state.active_bets))
-    # Betere status indicator
-    db_status = "☁️ Cloud Actief" if db and user_id else "🔌 Lokaal (Enter ID)"
+    
+    # Status indicator
+    if db and user_id:
+        db_status = "☁️ Cloud Actief"
+    elif db and not user_id:
+        db_status = "🔑 Voer ID in"
+    else:
+        db_status = "🔌 Lokaal Mode"
+        
     col3.metric("Systeem Status", db_status)
 
     st.subheader("Actieve Weddenschappen")
@@ -161,7 +168,7 @@ if menu == "📊 Dashboard":
 # --- BET GENERATOR ---
 elif menu == "⚡ Bet Generator":
     st.title("⚡ Live Bet Generator")
-    st.markdown("Filtert op de toekomst: alleen wedstrijden van vandaag die nog moeten beginnen.")
+    st.markdown("Scant enkel toekomstige wedstrijden van vandaag die nog moeten beginnen.")
 
     col_a, col_b = st.columns(2)
     time_win = col_a.selectbox("Tijdvenster", ["1", "2", "4", "6", "12", "24", "48"], index=5, format_func=lambda x: f"Komende {x} uur")
@@ -171,7 +178,6 @@ elif menu == "⚡ Bet Generator":
         with st.spinner("API-Sports scannen..."):
             brussels_tz = pytz.timezone(TIMEZONE)
             now = datetime.now(brussels_tz)
-            # We vragen fixtures van vandaag op, status NS = Not Started
             data = call_api("fixtures", {"date": now.strftime('%Y-%m-%d'), "status": "NS"})
             
             if data and data.get('response'):
@@ -194,9 +200,8 @@ elif menu == "⚡ Bet Generator":
                     st.session_state.found_match = None
                     st.warning("Geen toekomstige wedstrijden gevonden in dit venster.")
             else:
-                st.error("Kon geen data ophalen. Controleer API-limiet.")
+                st.error("Kon geen data ophalen.")
 
-    # Bevestiging sectie (blijft staan door session_state)
     if st.session_state.found_match:
         m = st.session_state.found_match
         st.markdown("---")
@@ -205,7 +210,6 @@ elif menu == "⚡ Bet Generator":
             if st.session_state.bankroll >= 10.0:
                 st.session_state.bankroll -= 10.0
                 st.session_state.active_bets.append(m)
-                # Opslaan in cloud indien verbonden
                 if user_id: 
                     save_bet_to_cloud(user_id, m)
                     sync_bankroll_to_cloud(user_id, st.session_state.bankroll)
@@ -214,12 +218,12 @@ elif menu == "⚡ Bet Generator":
                 time.sleep(1)
                 st.rerun()
             else:
-                st.error("Onvoldoende bankroll beschikbaar.")
+                st.error("Onvoldoende bankroll.")
 
 # --- INTELLIGENCE LAB ---
 elif menu == "🧪 Intelligence Lab":
     st.title("🧪 Lab: 0-0 Trigger Scanner")
-    st.markdown("Surveillance van de 0-0 Correct Score anomalie (Odd 15-30).")
+    st.markdown("Monitoring van de 0-0 Correct Score anomalie (Odd 15-30).")
 
     if st.button("🔍 SCAN VOOR 0-0 TRIGGERS VANDAAG"):
         with st.spinner("Odds doorzoeken op triggers..."):
@@ -240,21 +244,20 @@ elif menu == "🧪 Intelligence Lab":
                     "Status": "📡 Monitoring"
                 }
                 st.session_state.virtual_lab.insert(0, new_trig)
-                if user_id: save_bet_to_cloud(user_id, new_trig) # Opslaan in virtual_lab subcollectie
-                st.success(f"Nieuwe trigger gedetecteerd voor {new_trig['Match']}!")
+                if user_id: save_bet_to_cloud(user_id, new_trig)
+                st.success(f"Trigger gevonden voor {new_trig['Match']}!")
             else:
-                st.warning("Geen geschikte wedstrijden gevonden om momenteel te scannen.")
+                st.warning("Geen geschikte wedstrijden gevonden.")
 
     if st.session_state.virtual_lab:
         st.table(pd.DataFrame(st.session_state.virtual_lab))
 
 # --- GESCHIEDENIS ---
 elif menu == "📜 Geschiedenis":
-    st.title("📜 Wedgeschiedenis & Analytics")
-    st.info("Resultaten verschijnen hier zodra wedstrijden als 'Finished' worden herkend.")
+    st.title("📜 Wedgeschiedenis")
     if st.button("Genereer Test Export"):
-        st.session_state.history = [{"Datum": "2026-02-26", "Match": "Test Team vs Demo FC", "Status": "Won", "Profit": 7.50}]
+        st.session_state.history = [{"Datum": "2026-02-26", "Match": "Liverpool vs Everton", "Status": "Won", "Profit": 5.0}]
         st.rerun()
 
 st.markdown("---")
-st.caption(f"ProPunter Master V9.0 | API Live | België CET | Database: {'Verbonden' if db and user_id else 'Session Mode'}")
+st.caption(f"ProPunter Master V10.0 | API Live | België CET")
