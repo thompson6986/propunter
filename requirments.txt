@@ -1,6 +1,5 @@
 streamlit
 requests
+google-cloud-firestore
 pandas
 pytz
-google-cloud-firestore
-grpcio-status
