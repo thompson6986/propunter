@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import requests
 from datetime import datetime
 import pytz
 import time
@@ -9,11 +10,11 @@ from firebase_admin import credentials, firestore
 # --- CONFIGURATIE ---
 st.set_page_config(page_title="ProPunter Master V18", page_icon="⚽", layout="wide")
 TIMEZONE = "Europe/Brussels"
+API_KEY_ODDS = "0827af58298b4ce09f49d3b85e81818f" 
 
 # --- DATABASE INITIALISATIE ---
 HAS_DB = False
 db = None
-
 if "firebase" in st.secrets:
     try:
         if not firebase_admin._apps:
@@ -28,8 +29,7 @@ if "firebase" in st.secrets:
 def auto_save(user_id):
     if HAS_DB and user_id:
         try:
-            doc_ref = db.collection("users").document(user_id)
-            doc_ref.set({
+            db.collection("users").document(user_id).set({
                 "bankroll": st.session_state.bankroll,
                 "active_bets": st.session_state.active_bets,
                 "last_update": datetime.now(pytz.timezone(TIMEZONE))
@@ -45,78 +45,108 @@ def load_data(user_id):
     return 1000.0, []
 
 # --- SESSION STATE ---
-if 'bankroll' not in st.session_state:
-    st.session_state.bankroll = 1000.0
-if 'active_bets' not in st.session_state:
-    st.session_state.active_bets = []
+if 'bankroll' not in st.session_state: st.session_state.bankroll = 1000.0
+if 'active_bets' not in st.session_state: st.session_state.active_bets = []
+if 'generated_slips' not in st.session_state: st.session_state.generated_slips = []
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("⚽ ProPunter Master")
-    st.write("Status: " + ("✅ Cloud Verbonden" if HAS_DB else "🔌 Lokaal Mode"))
-    
     user_id = st.text_input("User ID", placeholder="punter_01")
     
-    col1, col2 = st.columns(2)
-    if col1.button("📥 Laad Data"):
+    c_l, c_i = st.columns(2)
+    if c_l.button("📥 Laad Data"):
         if user_id:
             st.session_state.bankroll, st.session_state.active_bets = load_data(user_id)
             st.rerun()
-            
-    if col2.button("✨ Initialiseer"):
-        if user_id:
-            auto_save(user_id)
-            st.success("Kluis aangemaakt!")
+    if c_i.button("✨ Init"):
+        if user_id: auto_save(user_id); st.success("Gesynct!")
 
     st.divider()
     st.metric("Liquid Saldo", f"€{st.session_state.bankroll:.2f}")
 
-    # DE REFUND LOGICA: Geld van open bets terug naar bankroll
+    # --- CUSTOM FILTERS ---
+    st.subheader("🎯 Strategie Instellingen")
+    target_odd = st.slider("Doel Odd", 1.10, 10.0, 2.0, 0.1)
+    min_prob = st.slider("Minimaal Slaagpercentage (%)", 10, 95, 50)
+    
+    st.divider()
     if st.button("🗑️ /Clear & Refund All"):
         refund_total = sum(float(b.get('Inzet', 0)) for b in st.session_state.active_bets)
         st.session_state.bankroll += refund_total
         st.session_state.active_bets = []
         if user_id: auto_save(user_id)
-        st.success(f"€{refund_total:.2f} teruggestort.")
-        time.sleep(1)
-        st.rerun()
+        st.success("Bankroll hersteld.")
+        time.sleep(1); st.rerun()
 
-# --- MAIN INTERFACE: DE 4 SLIPS VAN VANDAAG ---
-st.header("⚡ Dagelijkse Pro Slips (26 Feb 2026)")
+# --- MAIN INTERFACE ---
+tab1, tab2, tab3 = st.tabs(["⚡ Custom Generator", "📊 Dashboard", "📉 Live Center"])
 
-slips_data = [
-    {"odd": 1.5, "match": "Arsenal vs West Ham", "tijd": "21:00 CET", "markt": "Home Win"},
-    {"odd": 2.0, "match": "Lazio vs FC Porto", "tijd": "21:00 CET", "markt": "Over 2.5 Goals"},
-    {"odd": 3.0, "match": "Athletic Bilbao vs Sevilla", "tijd": "19:00 CET", "markt": "Draw (X)"},
-    {"odd": 5.0, "match": "Gent vs Club Brugge", "tijd": "20:30 CET", "markt": "X + BTS"}
-]
+with tab1:
+    st.header("⚡ Custom Strategy Scanner")
+    st.write(f"Zoeken naar odds rond de **{target_odd}** met een impliciete slaagkans van minstens **{min_prob}%**.")
+    
+    if st.button("🚀 SCAN DE MARKT"):
+        with st.spinner("Markten analyseren..."):
+            markets = "h2h,totals,btts"
+            url = f"https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey={API_KEY_ODDS}&regions=eu&markets={markets}&oddsFormat=decimal"
+            
+            try:
+                res = requests.get(url)
+                data = res.json()
+                found = []
 
-cols = st.columns(4)
-for i, slip in enumerate(slips_data):
-    with cols[i]:
-        st.markdown(f"### Odd: {slip['odd']}")
-        st.write(f"**{slip['match']}**")
-        st.caption(f"🕒 {slip['tijd']}")
-        st.info(slip['markt'])
-        
-        stake = st.number_input(f"Inzet (Min. 1)", min_value=1.0, value=10.0, key=f"s_{i}")
-        
-        if st.button(f"Plaats @{slip['odd']}", key=f"b_{i}"):
-            if st.session_state.bankroll >= stake:
-                st.session_state.bankroll -= stake
-                st.session_state.active_bets.append({
-                    "Match": slip['match'],
-                    "Tijd": slip['tijd'],
-                    "Odd": slip['odd'],
-                    "Inzet": stake,
-                    "Timestamp": datetime.now(pytz.timezone(TIMEZONE)).strftime("%H:%M")
-                })
-                if user_id: auto_save(user_id)
-                st.rerun()
+                for event in data:
+                    for bm in event.get('bookmakers', []):
+                        for market in bm.get('markets', []):
+                            m_key = market['key']
+                            for outcome in market.get('outcomes', []):
+                                odds = outcome['price']
+                                # Bereken impliciete kans (1/odds)
+                                implicit_prob = (1 / odds) * 100
+                                
+                                # Filter op basis van jouw input
+                                if abs(odds - target_odd) < 0.5 and implicit_prob >= min_prob:
+                                    found.append({
+                                        "match": f"{event['home_team']} vs {event['away_team']}",
+                                        "odd": odds,
+                                        "prob": round(implicit_prob, 1),
+                                        "markt": f"{m_key}: {outcome['name']}",
+                                        "tijd": datetime.fromisoformat(event['commence_time'].replace('Z', '')).strftime('%H:%M')
+                                    })
+                
+                # Sorteer op beste match met target_odd
+                st.session_state.generated_slips = sorted(found, key=lambda x: abs(x['odd'] - target_odd))[:8]
+                st.success(f"{len(st.session_state.generated_slips)} matches gevonden.")
+            except:
+                st.error("API error.")
 
-st.divider()
-st.subheader("📊 Lopende Portefeuille")
-if st.session_state.active_bets:
-    st.table(pd.DataFrame(st.session_state.active_bets))
-else:
-    st.info("Geen actieve posities.")
+    if st.session_state.generated_slips:
+        for i, info in enumerate(st.session_state.generated_slips):
+            with st.container():
+                c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+                c1.write(f"**{info['match']}**")
+                c2.write(f"Odd: **@{info['odd']}**")
+                c3.write(f"Slaagkans: {info['prob']}%")
+                
+                stake = c4.number_input(f"Inzet", min_value=1.0, value=10.0, key=f"s_{i}")
+                if c4.button(f"Plaats", key=f"b_{i}"):
+                    if st.session_state.bankroll >= stake:
+                        st.session_state.bankroll -= stake
+                        st.session_state.active_bets.append({
+                            "Match": info['match'], "Odd": info['odd'], "Inzet": stake, 
+                            "Markt": info['markt'], "Kans": f"{info['prob']}%"
+                        })
+                        if user_id: auto_save(user_id)
+                        st.rerun()
+                st.divider()
+
+with tab2:
+    st.header("📊 Actieve Portefeuille")
+    if st.session_state.active_bets:
+        st.table(pd.DataFrame(st.session_state.active_bets))
+    else: st.info("Geen actieve posities.")
+
+with tab3:
+    st.header("📉 Live Center")
+    st.write("Hier worden scores getoond van je geplaatste bets.")
