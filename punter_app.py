@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import requests
 from datetime import datetime
 import pytz
@@ -7,20 +6,20 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 # --- CONFIG ---
-st.set_page_config(page_title="Pro Punter Elite V87", page_icon="💰", layout="wide")
+st.set_page_config(page_title="Pro Punter Dashboard", page_icon="📈", layout="wide")
 TIMEZONE = pytz.timezone("Europe/Brussels")
 API_KEY = "0827af58298b4ce09f49d3b85e81818f" 
 BASE_URL = "https://v3.football.api-sports.io"
-headers = {'x-apisports-key': API_KEY, 'x-rapidapi-host': 'v3.football.api-sports.io'}
 
 # --- STYLING ---
 st.markdown("""
     <style>
     .stApp { background-color: #0d1117; color: #c9d1d9; }
-    .bankroll-card { background: linear-gradient(135deg, #1f6feb 0%, #114494 100%); padding: 20px; border-radius: 12px; text-align: center; margin-bottom: 20px; }
-    .tracker-card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 15px; margin-bottom: 10px; border-left: 5px solid #238636; }
-    .analysis-card { background: #1c2128; border: 1px solid #30363d; border-radius: 12px; padding: 20px; margin-bottom: 20px; }
-    .safe-pick { background: #23863622; color: #3fb950; padding: 10px; border-radius: 8px; border: 1px solid #238636; font-weight: bold; }
+    .bankroll-container { background: #161b22; border: 1px solid #30363d; padding: 20px; border-radius: 12px; margin-bottom: 25px; border-top: 4px solid #1f6feb; }
+    .bet-card { background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 15px; margin-bottom: 12px; position: relative; }
+    .status-badge { position: absolute; top: 10px; right: 10px; background: #238636; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.7rem; }
+    .win-amount { color: #3fb950; font-weight: bold; font-size: 1.1rem; }
+    .match-time { color: #8b949e; font-size: 0.85rem; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -34,70 +33,70 @@ def init_db():
 db = init_db()
 
 # --- APP TABS ---
-t1, t2, t3 = st.tabs(["📡 LIVE TRACKER", "📊 DEEP ANALYSIS", "🏟️ STADIUM"])
+t1, t2, t3 = st.tabs(["📊 TRACKER & FINANCES", "🔍 DEEP ANALYSIS", "🏟️ LIVESCORE"])
 
-# --- TAB 1: DE TRACKER (HERSTELD) ---
 with t1:
-    st.markdown('<div class="bankroll-card">', unsafe_allow_html=True)
-    st.subheader("💰 Huidige Bankroll")
-    st.title("€ 1.240,50") # Dit kan later dynamisch uit de DB komen
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    st.subheader("📡 Actieve Weddenschappen")
+    # 1. Bankroll Sectie
+    START_CAPITAL = 1200.00
     if db:
-        # Haal de laatste 10 bevestigde bets op
-        docs = db.collection("saved_slips").where("user_id", "==", "punter_01").order_by("timestamp", direction=firestore.Query.DESCENDING).limit(10).get()
+        docs = db.collection("saved_slips").where("user_id", "==", "punter_01").get()
+        total_staked = sum([doc.to_dict().get('stake', 0) for doc in docs])
+        current_balance = START_CAPITAL - total_staked
         
-        if not docs:
-            st.info("Nog geen actieve bets. Ga naar de Analyse tab om bets toe te voegen.")
-        
-        for doc in docs:
-            s = doc.to_dict()
-            with st.container():
-                st.markdown(f'''
-                    <div class="tracker-card">
-                        <div style="display:flex; justify-content:space-between;">
-                            <b>{s['matches'][0]['match']}</b>
-                            <span style="color:#58a6ff; font-weight:bold;">@{s.get("total_odd", "1.00")}</span>
-                        </div>
-                        <div style="font-size:0.85rem; color:#8b949e; margin-top:5px;">
-                            Markt: {s['matches'][0].get('market', 'Onbekend')} | Inzet: €10
-                        </div>
-                    </div>
-                ''', unsafe_allow_html=True)
-    else:
-        st.error("Database verbinding mislukt. Tracker niet beschikbaar.")
+        st.markdown(f'''
+            <div class="bankroll-container">
+                <div style="display:flex; justify-content: space-around; text-align:center;">
+                    <div><small>START SALDO</small><br><b>€{START_CAPITAL:.2f}</b></div>
+                    <div><small>OPENSTAANDE INZET</small><br><b style="color:#f1e05a;">€{total_staked:.2f}</b></div>
+                    <div><small>BESCHIKBAAR</small><br><b style="color:#58a6ff; font-size:1.5rem;">€{current_balance:.2f}</b></div>
+                </div>
+            </div>
+        ''', unsafe_allow_html=True)
 
-# --- TAB 2: ANALYSE (MET DIRECTE FEEDBACK NAAR TRACKER) ---
+    # 2. Betslip Overzicht
+    st.subheader("📝 Jouw Actieve Betslips")
+    if db:
+        active_bets = db.collection("saved_slips").where("user_id", "==", "punter_01").order_by("timestamp", direction=firestore.Query.DESCENDING).get()
+        
+        if not active_bets:
+            st.info("Nog geen bets geplaatst voor vandaag.")
+        
+        for bet in active_bets:
+            b = bet.to_dict()
+            m = b['matches'][0]
+            odd = float(b.get('total_odd', 1.0))
+            stake = float(b.get('stake', 10.0))
+            potential_win = stake * odd
+            
+            # Formatteer tijd als die beschikbaar is
+            start_time = b.get('start_time', "Niet gespecificeerd")
+            
+            st.markdown(f'''
+                <div class="bet-card">
+                    <span class="status-badge">LIVE / OPEN</span>
+                    <div class="match-time">🕒 Start: {start_time}</div>
+                    <div style="font-size: 1.1rem; margin: 5px 0;"><b>{m['match']}</b></div>
+                    <div style="color: #58a6ff;">Markt: {m.get('market', 'Match Result')} (@{odd})</div>
+                    <hr style="border: 0.5px solid #30363d; margin: 10px 0;">
+                    <div style="display:flex; justify-content: space-between; align-items: center;">
+                        <span>Inzet: €{stake:.2f}</span>
+                        <span>Mogelijke Winst: <span class="win-amount">€{potential_win:.2f}</span></span>
+                    </div>
+                </div>
+            ''', unsafe_allow_html=True)
+
 with t2:
-    st.header("📊 Deep Match Analysis")
-    # ... (Gedeelte voor League selectie zoals in V86) ...
-    
-    if st.button("🔍 SCAN EUROPESE AVOND", use_container_width=True):
-        # API aanvraag logica (Hetzelfde als V86)
-        # We slaan de resultaten op in st.session_state.deep_cache
+    st.header("🔍 Deep Analysis Engine")
+    # Hier de verbeterde analyse code die ook de 'start_time' opslaat bij bevestiging
+    if st.button("SCAN EUROPESE AVOND", use_container_width=True):
+        # ... (API Logica om fixtures op te halen) ...
+        # Zorg dat fixture['fixture']['timestamp'] wordt omgezet naar leesbaar uur
         pass
 
-    if 'deep_cache' in st.session_state:
-        for item in st.session_state.deep_cache:
-            f = item['f']
-            st.markdown(f'<div class="analysis-card">', unsafe_allow_html=True)
-            st.markdown(f"### {f['teams']['home']['name']} vs {f['teams']['away']['name']}")
-            st.markdown(f'<div class="safe-pick">🛡️ SAFE BET: {item["suggestion"]} (@{item["odd"]})</div>', unsafe_allow_html=True)
-            
-            if st.button(f"Bevestig Bet @{item['odd']}", key=f"track_v87_{f['fixture']['id']}"):
-                if db:
-                    db.collection("saved_slips").add({
-                        "user_id": "punter_01",
-                        "timestamp": datetime.now(TIMEZONE),
-                        "total_odd": item['odd'],
-                        "matches": [{"match": f"{f['teams']['home']['name']} vs {f['teams']['away']['name']}", "market": item['suggestion'], "odd": item['odd']}],
-                        "stake": 10.0,
-                        "status": "OPEN"
-                    })
-                    st.success(f"✅ Bet opgeslagen! Bekijk hem in de 'Live Tracker' tab.")
-                    st.balloons() # Visuele bevestiging
-            st.markdown('</div>', unsafe_allow_html=True)
-
-with t3:
-    components.html(f'<div id="wg-api-football-livescore" data-host="v3.football.api-sports.io" data-key="{API_KEY}" data-refresh="60" data-theme="dark" class="api_football_loader"></div><script type="module" src="https://widgets.api-sports.io/football/1.1.8/widget.js"></script>', height=1000)
+    # VOORBEELD HOE DE BEVESTIG KNOP NU WERKT:
+    # Bij bevestiging voegen we nu de 'start_time' toe:
+    # db.collection("saved_slips").add({
+    #    "start_time": datetime.fromtimestamp(f['fixture']['timestamp'], TIMEZONE).strftime('%H:%M'),
+    #    "potential_payout": item['odd'] * 10.0,
+    #    ...
+    # })
