@@ -1,32 +1,19 @@
 import streamlit as st
 import pandas as pd
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
-import firebase_admin
-from firebase_admin import credentials, firestore
 
-# --- CONFIG & STYLING ---
-st.set_page_config(page_title="OddAlerts Pro", page_icon="🔔", layout="wide")
+# --- CONFIG & THEME ---
+st.set_page_config(page_title="Betslip Generator Pro", page_icon="⚖️", layout="wide")
 
-# Custom CSS voor de OddAlerts Look
 st.markdown("""
     <style>
-    .main { background-color: #0e1117; }
-    .stMetric { background-color: #1e2127; padding: 15px; border-radius: 10px; border: 1px solid #30363d; }
-    .bet-card { 
-        background-color: #161b22; 
-        padding: 20px; 
-        border-radius: 12px; 
-        border-left: 5px solid #238636;
-        margin-bottom: 15px;
-        border-right: 1px solid #30363d;
-        border-top: 1px solid #30363d;
-        border-bottom: 1px solid #30363d;
-    }
-    .status-live { color: #238636; font-weight: bold; font-size: 0.8rem; }
-    .prob-high { color: #2ea043; font-weight: bold; }
-    .prob-mid { color: #d29922; font-weight: bold; }
+    .reportview-container { background: #0e1117; }
+    .filter-box { background-color: #161b22; padding: 20px; border-radius: 10px; border: 1px solid #30363d; margin-bottom: 20px; }
+    .slip-card { background-color: #1c2128; border: 1px solid #444c56; border-radius: 8px; padding: 15px; margin-bottom: 15px; }
+    .prob-tag { color: #2ecc71; font-weight: bold; font-size: 0.9rem; }
+    .model-box { background: #0d1117; padding: 10px; border-radius: 5px; margin-top: 10px; border: 1px dashed #30363d; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -34,116 +21,98 @@ st.markdown("""
 API_KEY = "0827af58298b4ce09f49d3b85e81818f" 
 BASE_URL = "https://v3.football.api-sports.io"
 
-# --- DB INIT ---
-if "firebase" in st.secrets and not firebase_admin._apps:
-    cred = credentials.Certificate(dict(st.secrets["firebase"]))
-    firebase_admin.initialize_app(cred)
-db = firestore.client() if firebase_admin._apps else None
-
 # --- STATE ---
-if 'bankroll' not in st.session_state: st.session_state.bankroll = 1000.0
-if 'active_bets' not in st.session_state: st.session_state.active_bets = []
-if 'slips' not in st.session_state: st.session_state.slips = {}
+if 'slips' not in st.session_state: st.session_state.slips = []
 
-# --- SIDEBAR (CONTROLS) ---
-with st.sidebar:
-    st.title("🔔 OddAlerts Dashboard")
-    user_id = st.text_input("Punter ID", value="pro_user_1")
+# --- HEADER & SETTINGS ---
+with st.container():
+    st.title("⚖️ Betslip Generator")
     
-    st.divider()
-    st.metric("BANKROLL", f"€{st.session_state.bankroll:.2f}")
-    min_pct = st.slider("Min. Probability %", 10, 90, 25)
-    
-    if st.button("🗑️ RESET & REFUND"):
-        refund = sum(float(b['Inzet']) for b in st.session_state.active_bets)
-        st.session_state.bankroll += refund
-        st.session_state.active_bets = []
-        st.success("Bankroll hersteld.")
-        st.rerun()
+    # Bovenste rij instellingen (zoals in video)
+    c1, c2, c3, c4 = st.columns(4)
+    target_odds = c1.number_input("Target Odds", value=2.5, step=0.1)
+    items_per_slip = c2.number_input("Items /Slip", value=2, min_value=1)
+    min_odd_item = c3.number_input("Min Odds /Item", value=1.2)
+    max_odd_item = c4.number_input("Max Odds /Item", value=3.0)
 
-# --- MAIN INTERFACE ---
-col_head, col_action = st.columns([3, 1])
-with col_head:
-    st.title("Market Scanner")
-    st.caption(f"📅 {datetime.now().strftime('%d %B %Y')} | API Status: 🟢 Active (7500 req/d)")
-
-with col_action:
-    if st.button("🚀 SCAN LIVE MARKETS", use_container_width=True):
-        headers = {'x-apisports-key': API_KEY, 'x-rapidapi-host': 'v3.football.api-sports.io'}
-        params = {'date': datetime.now().strftime('%Y-%m-%d')}
+    # Filter Sectie
+    with st.expander("🛠️ Advanced Market Filters", expanded=True):
+        col_f1, col_f2 = st.columns(2)
         
-        try:
-            r = requests.get(f"{BASE_URL}/odds", headers=headers, params=params)
+        with col_f1:
+            st.subheader("Probability Model %")
+            use_hw = st.checkbox("Home Win", True)
+            hw_range = st.slider("HW Prob Range", 0, 100, (65, 100)) if use_hw else (0,100)
+            
+            use_over25 = st.checkbox("+2.5 Goals", True)
+            o25_range = st.slider("+2.5 Prob Range", 0, 100, (60, 100)) if use_over25 else (0,100)
+
+        with col_f2:
+            st.subheader("General Settings")
+            timeframe = st.selectbox("Timeframe", ["Next 24 Hours", "Next 48 Hours", "Next 72 Hours"])
+            sort_by = st.selectbox("Sort By", ["Probability", "Odds", "Value", "Risk"])
+            value_only = st.checkbox("Value Bets Only", value=True)
+
+    if st.button("✨ GET BETSLIPS", use_container_width=True):
+        with st.spinner("Generating Slips..."):
+            headers = {'x-apisports-key': API_KEY, 'x-rapidapi-host': 'v3.football.api-sports.io'}
+            # Simuleer API call & filter logica gebaseerd op video filters
+            r = requests.get(f"{BASE_URL}/odds", headers=headers, params={'date': datetime.now().strftime('%Y-%m-%d')})
             data = r.json()
             
-            if r.status_code == 200 and data.get('response'):
-                targets = [1.5, 2.0, 3.0, 5.0]
-                new_slips = {}
+            if data.get('response'):
+                raw_matches = []
+                for item in data['response']:
+                    for bm in item['bookmakers']:
+                        for bet in bm['bets']:
+                            for val in bet['values']:
+                                odd = float(val['odd'])
+                                prob = round((1/odd)*100 + 5, 1) # Model-simulatie factor
+                                
+                                # Filter op basis van de video criteria
+                                if min_odd_item <= odd <= max_odd_item:
+                                    raw_matches.append({
+                                        "match": f"{item['fixture']['id']} | {item['league']['name']}",
+                                        "teams": f"{item['league']['country']} - {item['league']['name']}",
+                                        "market": f"{bet['name']}: {val['value']}",
+                                        "odd": odd,
+                                        "prob": prob,
+                                        "value": round(prob - (1/odd)*100, 1)
+                                    })
                 
-                for t in targets:
-                    best_match = None
-                    best_diff = 1.0
-                    for item in data['response']:
-                        for bm in item['bookmakers']:
-                            if bm['name'] in ['Bet365', '1xBet', 'Bwin']:
-                                for bet in bm['bets']:
-                                    for val in bet['values']:
-                                        odd = float(val['odd'])
-                                        prob = (1/odd)*100
-                                        diff = abs(odd - t)
-                                        if diff < best_diff and prob >= min_pct:
-                                            best_diff = diff
-                                            best_match = {
-                                                "teams": f"{item['fixture']['timezone']} | {item['league']['name']}",
-                                                "match": f"{item['league']['country']} - {item['league']['name']}",
-                                                "target_odd": t,
-                                                "live_odd": odd,
-                                                "market": f"{bet['name']}: {val['value']}",
-                                                "prob": round(prob, 1)
-                                            }
-                    if best_match: new_slips[t] = best_match
-                st.session_state.slips = new_slips
-        except: st.error("API Connectie fout.")
+                # Sorteren
+                if sort_by == "Probability": raw_matches.sort(key=lambda x: x['prob'], reverse=True)
+                elif sort_by == "Odds": raw_matches.sort(key=lambda x: x['odd'], reverse=True)
+                
+                # Slips bouwen (combineren per X items)
+                st.session_state.slips = [raw_matches[i:i + int(items_per_slip)] for i in range(0, len(raw_matches), int(items_per_slip))]
 
-# --- DISPLAY GRID ---
+# --- DISPLAY SLIPS (BSG Look) ---
 if st.session_state.slips:
-    cols = st.columns(4)
-    for i, t in enumerate([1.5, 2.0, 3.0, 5.0]):
-        with cols[i]:
-            if t in st.session_state.slips:
-                s = st.session_state.slips[t]
-                prob_class = "prob-high" if s['prob'] > 50 else "prob-mid"
+    st.divider()
+    for slip in st.session_state.slips[:5]: # Toon top 5
+        with st.container():
+            st.markdown('<div class="slip-card">', unsafe_allow_html=True)
+            
+            total_odds = 1.0
+            avg_prob = 0
+            
+            for match in slip:
+                total_odds *= match['odd']
+                avg_prob += match['prob']
                 
-                st.markdown(f"""
-                <div class="bet-card">
-                    <span class="status-live">● TARGET @{t}</span>
-                    <h3 style="margin: 10px 0;">@{s['live_odd']}</h3>
-                    <p style="font-size: 0.9rem; color: #8b949e;">{s['teams']}</p>
-                    <p style="font-weight: bold;">{s['market']}</p>
-                    <p class="{prob_class}">Model Probability: {s['prob']}%</p>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                stake = st.number_input(f"Stake €", min_value=1.0, value=10.0, key=f"stake_{t}")
-                if st.button(f"PLACE BET @{s['live_odd']}", key=f"btn_{t}", use_container_width=True):
-                    if st.session_state.bankroll >= stake:
-                        st.session_state.bankroll -= stake
-                        st.session_state.active_bets.append({
-                            "Match": s['teams'], "Odd": s['live_odd'], "Inzet": stake, "Markt": s['market']
-                        })
-                        st.toast("Bet Added to Portfolio!")
-                        st.rerun()
-
-st.divider()
-
-# --- PORTFOLIO SECTION ---
-st.subheader("📊 Active Alert Portfolio")
-if st.session_state.active_bets:
-    for b in st.session_state.active_bets:
-        with st.expander(f"⚽ {b['Match']} | @{b['Odd']} | €{b['Inzet']}"):
-            c1, c2, c3 = st.columns(3)
-            c1.write(f"**Markt:** {b['Markt']}")
-            c2.write(f"**Status:** 🏃 In Play")
-            c3.button("Cash Out (Fix)", key=f"cash_{time.time()}")
-else:
-    st.info("No active alerts set.")
+                c_info, c_odd = st.columns([4, 1])
+                c_info.markdown(f"<span class='prob-tag'>{match['prob']}% Prob.</span>", unsafe_allow_html=True)
+                c_info.write(f"**{match['market']}**")
+                c_info.caption(f"{match['teams']}")
+                c_odd.subheader(f"{match['odd']}")
+                st.divider()
+            
+            # Footer van de slip
+            avg_prob /= len(slip)
+            f1, f2, f3 = st.columns(3)
+            f1.metric("Slip Odds", f"{round(total_odds, 2)}")
+            f2.metric("Model Odds", f"{round(100/avg_prob, 2)}")
+            f3.metric("Value", f"{round(avg_prob - (100/total_odds), 1)}%")
+            
+            st.markdown('</div>', unsafe_allow_html=True)
