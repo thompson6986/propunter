@@ -2,3 +2,4 @@ streamlit
 requests
 pandas
 lucide-react
+google-cloud-firestore
