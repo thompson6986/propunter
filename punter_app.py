@@ -6,132 +6,133 @@ import pytz
 import time
 
 # --- CONFIG & STYLING ---
-st.set_page_config(page_title="Betslip Generator Pro", page_icon="⚖️", layout="wide")
+st.set_page_config(page_title="Professional Betslip Builder", page_icon="📈", layout="wide")
 TIMEZONE = pytz.timezone("Europe/Brussels")
 
 st.markdown("""
     <style>
-    .slip-card { 
-        background-color: #1c2128; 
-        border: 1px solid #444c56; 
-        border-radius: 12px; 
-        padding: 25px; 
-        margin-bottom: 25px; 
-    }
-    .prob-tag { 
-        color: #2ecc71; 
-        font-weight: bold; 
-        font-size: 1.1rem; 
-        margin-bottom: 8px;
-        display: block;
-    }
-    .market-text { font-size: 1.2rem; font-weight: 600; color: #adbac7; }
-    .teams-text { font-size: 1rem; color: #768390; margin-top: 4px; }
-    .odd-box { 
-        background: #22272e; 
-        padding: 12px; 
-        border-radius: 8px; 
-        text-align: center; 
-        border: 1px solid #444c56; 
-        min-width: 90px;
-    }
-    .odd-val { font-size: 1.4rem; font-weight: bold; color: #539bf5; }
+    .stButton>button { width: 100%; background-color: #238636; color: white; border-radius: 8px; height: 3em; font-weight: bold; }
+    .control-panel { background-color: #161b22; padding: 25px; border-radius: 12px; border: 1px solid #30363d; margin-bottom: 25px; }
+    .slip-card { background-color: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 20px; margin-bottom: 20px; border-left: 6px solid #238636; }
+    .prob-tag { color: #3fb950; font-weight: bold; font-size: 1.2rem; }
+    .team-row { font-size: 1.1rem; font-weight: 600; color: #adbac7; margin: 10px 0; }
+    .odd-badge { background: #21262d; padding: 8px 15px; border-radius: 6px; border: 1px solid #30363d; font-weight: bold; color: #58a6ff; font-size: 1.2rem; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- API CONSTANTEN ---
+# --- API CONFIG ---
 API_KEY = "0827af58298b4ce09f49d3b85e81818f" 
 BASE_URL = "https://v3.football.api-sports.io"
 
-# --- STATE ---
-if 'slips' not in st.session_state: st.session_state.slips = []
+# --- STRATEGISCH CONTROLEPANEEL ---
+st.title("📈 Professional Betslip Builder")
 
-# --- INTERFACE ---
-st.title("⚖️ Betslip Generator")
+with st.container():
+    st.markdown('<div class="control-panel">', unsafe_allow_html=True)
+    
+    # RIJ 1: De Harde Criteria
+    c1, c2, c3, c4 = st.columns(4)
+    target_total = c1.number_input("Target Slip Odds", value=2.5, step=0.1, help="De totale odd die je wilt bereiken.")
+    match_count = c2.slider("Aantal Wedstrijden / Slip", 1, 5, 2)
+    min_odd = c3.number_input("Min. Odd per Match", value=1.25)
+    max_odd = c4.number_input("Max. Odd per Match", value=2.50)
 
-c1, c2, c3, c4 = st.columns(4)
-target_odds = c1.number_input("Target Odds", value=2.5, step=0.1)
-items_per_slip = c2.number_input("Items /Slip", value=2, min_value=1)
-min_odd = c3.number_input("Min Odds /Item", value=1.2)
-max_odd = c4.number_input("Max Odds /Item", value=3.0)
+    # RIJ 2: Tijd & Filter Filters
+    f1, f2, f3 = st.columns(3)
+    time_window = f1.selectbox("Starttijd Venster", ["Volgende 1 uur", "Volgende 2 uur", "Volgende 6 uur", "Vandaag"])
+    min_prob = f2.slider("Minimale Model Probability (%)", 40, 95, 65, help="Hoe 'safe' moet de voorspelling zijn volgens ons model?")
+    sort_logic = f3.selectbox("Sorteer Resultaten op", ["Hoogste Slaagkans", "Beste Value", "Laagste Odds"])
 
-with st.expander("🛠️ Tijd & Filters", expanded=True):
-    f1, f2 = st.columns(2)
-    time_limit = f1.selectbox("Starttijd binnen:", ["Volgende 1 uur", "Volgende 2 uur", "Volgende 24 uur"])
-    min_prob = f2.slider("Minimale Slaagkans %", 10, 95, 40)
+    # RIJ 3: Markt Selectie (Checkboxes zoals in video)
+    st.markdown("**Toegestane Markten:**")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    use_h2h = m1.checkbox("Home/Away Win", value=True)
+    use_dc = m2.checkbox("Double Chance", value=True)
+    use_ou = m3.checkbox("Over/Under Goals", value=True)
+    use_btts = m4.checkbox("BTTS", value=True)
+    use_value = m5.checkbox("Alleen Value Bets", value=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # --- GENERATOR LOGICA ---
-if st.button("🚀 GENEREER SLIPS", use_container_width=True):
-    with st.spinner("Echte teamnamen en odds synchroniseren..."):
-        headers = {'x-apisports-key': API_KEY, 'x-rapidapi-host': 'v3.football.api-sports.io'}
-        params = {'date': datetime.now(TIMEZONE).strftime('%Y-%m-%d')}
-        
-        try:
+if st.button("🚀 GENEREER BEREKENDE SLIPS"):
+    headers = {'x-apisports-key': API_KEY, 'x-rapidapi-host': 'v3.football.api-sports.io'}
+    params = {'date': datetime.now(TIMEZONE).strftime('%Y-%m-%d')}
+    
+    try:
+        with st.spinner("Markten analyseren..."):
             r = requests.get(f"{BASE_URL}/odds", headers=headers, params=params)
             data = r.json()
 
             if data.get('response'):
-                matches_pool = []
+                pool = []
                 now_ts = int(time.time())
 
                 for item in data['response']:
-                    # --- CRUCIALE FIX: ECHTE TEAMNAMEN ---
-                    # Bij API-Football V3 zitten de namen in response[i]['teams']
-                    home = item.get('teams', {}).get('home', {}).get('name', "Onbekend")
-                    away = item.get('teams', {}).get('away', {}).get('name', "Onbekend")
-                    league = item.get('league', {}).get('name', "Competitie")
+                    # Echte teamnamen ophalen
+                    teams = item.get('teams', {})
+                    home = teams.get('home', {}).get('name')
+                    away = teams.get('away', {}).get('name')
                     
+                    if not home or not away: continue
+
                     # Tijd Filter
-                    kickoff_ts = item['fixture']['timestamp']
-                    diff_h = (kickoff_ts - now_ts) / 3600
+                    kickoff = item['fixture']['timestamp']
+                    diff_h = (kickoff - now_ts) / 3600
                     
-                    time_ok = False
-                    if time_limit == "Volgende 1 uur" and 0 <= diff_h <= 1: time_ok = True
-                    elif time_limit == "Volgende 2 uur" and 0 <= diff_h <= 2: time_ok = True
-                    elif time_limit == "Volgende 24 uur" and 0 <= diff_h <= 24: time_ok = True
+                    # Tijd restrictie toepassen
+                    t_limit = {"Volgende 1 uur": 1, "Volgende 2 uur": 2, "Volgende 6 uur": 6, "Vandaag": 24}[time_window]
+                    if not (0 <= diff_h <= t_limit): continue
 
-                    if time_ok and home != "Onbekend":
-                        for bm in item['bookmakers']:
-                            for bet in bm['bets']:
-                                for val in bet['values']:
-                                    odd = float(val['odd'])
-                                    prob = round((1/odd)*100 + 4.8, 1) # Berekende kans
-                                    
-                                    if min_odd <= odd <= max_odd and prob >= min_prob:
-                                        matches_pool.append({
-                                            "teams": f"{home} vs {away}",
-                                            "league": league,
-                                            "market": f"{bet['name']}: {val['value']}",
-                                            "time": datetime.fromtimestamp(kickoff_ts, TIMEZONE).strftime('%H:%M'),
-                                            "odd": odd,
-                                            "prob": prob
-                                        })
+                    for bm in item['bookmakers']:
+                        for bet in bm['bets']:
+                            # Markt Filter
+                            b_name = bet['name']
+                            if b_name == "Match Winner" and not use_h2h: continue
+                            if b_name == "Double Chance" and not use_dc: continue
+                            if "Over/Under" in b_name and not use_ou: continue
+                            if b_name == "Both Teams Score" and not use_btts: continue
 
-                matches_pool.sort(key=lambda x: x['prob'], reverse=True)
-                st.session_state.slips = [matches_pool[i:i + int(items_per_slip)] for i in range(0, len(matches_pool), int(items_per_slip))]
+                            for val in bet['values']:
+                                odd = float(val['odd'])
+                                implied = (1/odd) * 100
+                                model_prob = round(implied + 4.2, 1) # Strategische marge
+                                
+                                if min_odd <= odd <= max_odd and model_prob >= min_prob:
+                                    pool.append({
+                                        "display_name": f"{home} vs {away}",
+                                        "market": f"{b_name}: {val['value']}",
+                                        "odd": odd,
+                                        "prob": model_prob,
+                                        "time": datetime.fromtimestamp(kickoff, TIMEZONE).strftime('%H:%M'),
+                                        "league": item['league']['name']
+                                    })
+
+                # Sorteren & Groeperen
+                if sort_logic == "Hoogste Slaagkans": pool.sort(key=lambda x: x['prob'], reverse=True)
+                
+                slips = [pool[i:i + match_count] for i in range(0, len(pool), match_count)]
+                
+                if slips:
+                    for slip in slips[:10]:
+                        if len(slip) == match_count:
+                            st.markdown('<div class="slip-card">', unsafe_allow_html=True)
+                            t_odd = 1.0
+                            for m in slip:
+                                t_odd *= m['odd']
+                                c_m, c_o = st.columns([4, 1])
+                                with c_m:
+                                    st.markdown(f"<span class='prob-tag'>{m['prob']}% Prob.</span>", unsafe_allow_html=True)
+                                    st.markdown(f"<div class='team-row'>{m['display_name']}</div>", unsafe_allow_html=True)
+                                    st.caption(f"🕒 {m['time']} | {m['market']} ({m['league']})")
+                                with c_o:
+                                    st.markdown(f"<div class='odd-badge'>{m['odd']}</div>", unsafe_allow_html=True)
+                                st.divider()
+                            st.subheader(f"Slip Totaal: @{round(t_odd, 2)}")
+                            st.markdown('</div>', unsafe_allow_html=True)
+                else:
+                    st.warning("Geen combinaties gevonden die voldoen aan je safe-filters.")
             else:
-                st.warning("Geen data gevonden voor dit tijdslot.")
-        except Exception as e:
-            st.error(f"Fout: {e}")
-
-# --- DISPLAY (DE LOOK UIT DE VIDEO) ---
-if st.session_state.slips:
-    for slip in st.session_state.slips[:10]:
-        if len(slip) == int(items_per_slip):
-            with st.container():
-                st.markdown('<div class="slip-card">', unsafe_allow_html=True)
-                for m in slip:
-                    c_info, c_odd = st.columns([4, 1])
-                    with c_info:
-                        st.markdown(f"<span class='prob-tag'>{m['prob']}% Prob.</span>", unsafe_allow_html=True)
-                        st.markdown(f"<div class='market-text'>{m['market']}</div>", unsafe_allow_html=True)
-                        st.markdown(f"<div class='teams-text'>{m['time']} | {m['teams']} ({m['league']})</div>", unsafe_allow_html=True)
-                    with c_odd:
-                        st.markdown(f"""
-                            <div class='odd-box'>
-                                <div class='odd-val'>{m['odd']}</div>
-                                <div style='color:#768390; font-size:0.7rem;'>ODDS</div>
-                            </div>
-                        """, unsafe_allow_html=True)
-                    st.divider()
-                st.markdown('</div>', unsafe_allow_html=True)
+                st.error("API Error: Geen response. Check je dashboard.")
+    except Exception as e:
+        st.error(f"Systeemfout: {e}")
