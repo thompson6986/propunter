@@ -1,5 +1,5 @@
 streamlit
 requests
-google-cloud-firestore
 pandas
+google-cloud-firestore
 pytz
