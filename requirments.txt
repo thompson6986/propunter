@@ -3,4 +3,4 @@ requests
 pandas
 pytz
 firebase-admin
-google-cloud-firestore==2.11.0
+google-cloud-firestore
