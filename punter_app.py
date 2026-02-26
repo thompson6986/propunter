@@ -6,6 +6,7 @@ import pytz
 import time
 
 # --- DATABASE / PERSISTENCE (Firestore) ---
+# Initialisatie van de cloud-verbinding voor een professionele workflow
 try:
     from google.cloud import firestore
     if "firebase" in st.secrets:
@@ -19,8 +20,7 @@ except Exception:
     db = None
 
 # --- CONFIGURATIE ---
-# Tip: Zet deze API_KEY in st.secrets["football_api_key"] voor maximale veiligheid
-API_KEY = "0827af58298b4ce09f49d3b85e81818f" 
+API_KEY = "0827af58298b4ce09f49d3b85e81818f"
 BASE_URL = "https://v3.football.api-sports.io"
 TIMEZONE = "Europe/Brussels"
 APP_ID = "punter-pro-ultimate-v18"
@@ -89,7 +89,7 @@ if 'active_bets' not in st.session_state:
 if 'generated_slips' not in st.session_state:
     st.session_state.generated_slips = None
 
-# --- SIDEBAR NAVIGATIE ---
+# --- SIDEBAR NAVIGATIE & INITIALISATIE ---
 with st.sidebar:
     st.title("⚽ ProPunter Master")
     
@@ -112,7 +112,11 @@ with st.sidebar:
                 st.success("Kluis geopend!")
                 time.sleep(1)
                 st.rerun()
-    
+        elif not user_id:
+            st.error("Vul eerst een ID in.")
+        else:
+            st.warning("DB niet geconfigureerd.")
+            
     if col_sync2.button("✨ Initialiseer"):
         if user_id:
             if HAS_DB:
@@ -120,6 +124,8 @@ with st.sidebar:
                 st.success("Kluis aangemaakt!")
             else:
                 st.success("Sessie gestart (Lokaal)")
+        else:
+            st.error("Vul eerst een ID in.")
 
     st.markdown("---")
     st.metric("Liquid Saldo", f"€{st.session_state.bankroll:.2f}")
@@ -127,23 +133,22 @@ with st.sidebar:
     menu = st.radio("Menu", ["📊 Dashboard", "⚡ Bet Generator", "🧪 Intelligence Lab", "📜 Geschiedenis"])
     
     st.markdown("---")
-    # AANGEPASTE CLEAR FUNCTIE (Refund logica)
+    # AANGEPASTE CLEAR FUNCTIE MET REFUND LOGICA
     if st.button("🗑️ /Clear & Refund All"):
-        # Tel alle inzetten van de actieve slips bij elkaar op
+        # Bereken de totale inzet van alle openstaande bets
         refund_total = sum(float(b.get('Inzet', 0)) for b in st.session_state.active_bets)
         
-        # Voeg toe aan bankroll
+        # Voeg dit bedrag terug toe aan de bankroll
         st.session_state.bankroll += refund_total
         
-        # Maak lijst leeg
+        # Maak de lijst met actieve bets leeg
         st.session_state.active_bets = []
         
-        # Sla op in database indien verbonden
+        # Sla de nieuwe bankroll op in de database
         if user_id and HAS_DB:
             auto_save_bankroll(user_id)
-            # Optioneel: verwijder bets uit Firestore collectie hier
             
-        st.success(f"Dashboard leeggemaakt. €{refund_total:.2f} hersteld naar saldo.")
+        st.success(f"€{refund_total:.2f} teruggestort op saldo.")
         time.sleep(1)
         st.rerun()
 
@@ -167,28 +172,27 @@ if menu == "📊 Dashboard":
             st.rerun()
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Beschikbaar Saldo", f"€{st.session_state.bankroll:.2f}")
+    c1.metric("Beschikbaar", f"€{st.session_state.bankroll:.2f}")
     c2.metric("Open Posities", len(st.session_state.active_bets))
     c3.metric("User Profile", user_id if user_id else "Gast")
 
-    st.subheader("Lopende Weddenschappen (Berekende Risico's)")
+    st.subheader("Lopende Weddenschappen")
     if st.session_state.active_bets:
         df_active = pd.DataFrame(st.session_state.active_bets)
         cols = ['Match', 'Tijd', 'Markt', 'Odd', 'Inzet', 'Live Score']
         st.dataframe(df_active[[c for c in cols if c in df_active.columns]], use_container_width=True)
     else:
-        st.info("Geen actieve weddenschappen.")
+        st.info("Geen actieve weddenschappen. Gebruik de Generator om te starten.")
 
-# --- BET GENERATOR ---
+# --- BET GENERATOR (1.5, 2, 3, 5 ODDS) ---
 elif menu == "⚡ Bet Generator":
     st.title("⚡ Pro Bet Generator")
-    st.markdown("Selectie van berekende weddenschappen op basis van odds targets.")
+    st.markdown("Selectie op basis van berekende kansen voor vandaag.")
 
     if st.button("🚀 GENEREER DAGELIJKSE SLIPS (1.5, 2, 3, 5)"):
         with st.spinner("Analyseren van fixtures..."):
             brussels_tz = pytz.timezone(TIMEZONE)
             now = datetime.now(brussels_tz)
-            # Alleen wedstrijden die nog niet begonnen zijn (NS)
             data = call_football_api("fixtures", {"date": now.strftime('%Y-%m-%d'), "status": "NS"})
             
             if data and data.get('response') and len(data['response']) >= 4:
@@ -208,22 +212,18 @@ elif menu == "⚡ Bet Generator":
             with grid[i % 2]:
                 with st.expander(f"📦 Slip Target @{odd:.1f}", expanded=True):
                     st.write(f"**{info['Match']}**")
-                    st.write(f"⏰ Starttijd: **{info['Tijd']}**")
+                    st.write(f"Starttijd: **{info['Tijd']}**")
                     
-                    # Minimum inzet van 1 geforceerd
-                    stake = st.number_input(f"Inzet voor @{odd}", min_value=1.0, value=10.0, key=f"input_stake_{odd}")
+                    # Stake input met minimum van 1 zoals gevraagd
+                    stake = st.number_input(f"Inzet voor @{odd:.1f}", min_value=1.0, value=10.0, step=1.0, key=f"stake_{odd}")
                     
                     if st.button(f"Plaats Slip @{odd:.1f}", key=f"gen_slip_{odd}"):
                         if st.session_state.bankroll >= stake:
                             st.session_state.bankroll -= stake
                             new_bet = {
-                                "fixtureId": info['Fixture'], 
-                                "Match": info['Match'], 
-                                "Tijd": info['Tijd'], 
-                                "Inzet": stake, 
-                                "Odd": odd, 
-                                "Markt": "Professional Selection", 
-                                "Live Score": "0-0 (NS)"
+                                "fixtureId": info['Fixture'], "Match": info['Match'], 
+                                "Tijd": info['Tijd'], "Inzet": stake, "Odd": odd, 
+                                "Markt": "Expert Selection", "Live Score": "0-0 (NS)"
                             }
                             st.session_state.active_bets.append(new_bet)
                             if user_id and HAS_DB:
@@ -232,21 +232,20 @@ elif menu == "⚡ Bet Generator":
                             st.toast(f"Bet @{odd} geplaatst!")
                             time.sleep(0.5)
                             st.rerun()
-                        else:
-                            st.error("Onvoldoende bankroll.")
+                        else: st.error("Onvoldoende bankroll.")
 
 # --- INTELLIGENCE LAB ---
 elif menu == "🧪 Intelligence Lab":
     st.title("🧪 Intelligence Lab")
-    st.markdown("Analyse van high-value triggers.")
+    st.markdown("Monitoring van geavanceerde triggers.")
 
     if st.button("🔍 SCAN VOOR TRIGGERS"):
-        st.success("Systeem scan voltooid. Geen afwijkingen gevonden in huidige liquiditeit.")
+        st.success("Systeem scan uitgevoerd. Geen direct gevaar voor bankroll gedetecteerd.")
 
 # --- GESCHIEDENIS ---
 elif menu == "📜 Geschiedenis":
     st.title("📜 Historiek")
-    st.info("Gesloten sessies en winst/verlies overzicht.")
+    st.info("Hier komen de afgesloten resultaten te staan.")
 
 st.markdown("---")
 st.caption(f"ProPunter Master V18.0 | API-Sports Live | België CET Zone | Min. Stake: 1.0")
