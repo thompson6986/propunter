@@ -8,9 +8,12 @@ import firebase_admin
 from firebase_admin import credentials, firestore
 
 # --- CONFIG ---
-st.set_page_config(page_title="ProPunter Master V22", page_icon="⚽", layout="wide")
+st.set_page_config(page_title="ProPunter Master V24", page_icon="⚽", layout="wide")
 TIMEZONE = "Europe/Brussels"
-API_KEY = "0827af58298b4ce09f49d3b85e81818f"
+
+# JOUW API-FOOTBALL KEY (van dashboard.api-football.com)
+API_KEY = "0827af58298b4ce09f49d3b85e81818f" 
+BASE_URL = "https://v3.football.api-sports.io"
 
 # --- DB INIT ---
 HAS_DB = False
@@ -53,6 +56,7 @@ if 'gen_slips' not in st.session_state: st.session_state.gen_slips = {}
 # --- SIDEBAR ---
 with st.sidebar:
     st.title("⚽ ProPunter Master")
+    st.caption("Provider: API-Football ✅")
     user_id = st.text_input("User ID", placeholder="bijv. pro_punter_01")
     
     col1, col2 = st.columns(2)
@@ -65,92 +69,87 @@ with st.sidebar:
 
     st.divider()
     st.metric("Liquid Saldo", f"€{st.session_state.bankroll:.2f}")
-    
-    st.subheader("🎯 Strategie")
-    min_prob = st.slider("Min. Slaagkans (%)", 5, 95, 10) # Lager gezet voor meer resultaat
+    min_prob = st.slider("Min. Slaagkans (%)", 5, 95, 15)
 
-    if st.button("🗑️ /Clear & Refund All"):
+    if st.button("🗑️ /Clear & Refund"):
         refund = sum(float(b.get('Inzet', 0)) for b in st.session_state.active_bets)
         st.session_state.bankroll += refund
         st.session_state.active_bets = []
         if user_id: auto_save(user_id)
-        st.success(f"€{refund:.2f} hersteld!")
-        time.sleep(0.5); st.rerun()
+        st.rerun()
 
 # --- MAIN ---
 t1, t2, t3 = st.tabs(["⚡ Pro Generator", "📊 Portfolio", "📉 Live Scores"])
 
 with t1:
-    st.header("⚡ Live Scanner (Vandaag)")
+    st.header("⚡ Live Scanner (API-Football)")
     
-    if st.button("🚀 FORCEER NIEUWE SCAN"):
-        with st.spinner("Verse data ophalen..."):
-            # We gebruiken 'upcoming' om de cache te omzeilen
-            url = f"https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey={API_KEY}&regions=eu&markets=h2h,totals,btts&oddsFormat=decimal"
+    if st.button("🚀 SCAN ALLE MARKTEN"):
+        with st.spinner("Data ophalen via API-Football..."):
+            headers = {
+                'x-apisports-key': API_KEY,
+                'x-rapidapi-host': 'v3.football.api-sports.io'
+            }
+            # We halen odds op voor de wedstrijden van vandaag
+            params = {'date': datetime.now().strftime('%Y-%m-%d')}
             
             try:
-                # We voegen een timestamp toe aan de request om caching te voorkomen
-                r = requests.get(url, params={"_t": int(time.time())})
+                r = requests.get(f"{BASE_URL}/odds", headers=headers, params=params)
+                data = r.json()
                 
-                if r.status_code == 200:
-                    data = r.json()
+                if r.status_code == 200 and data.get('response'):
                     targets = [1.5, 2.0, 3.0, 5.0]
                     found = {}
                     
-                    for t in targets:
-                        best_match = None
-                        min_diff = 1.0
-                        
-                        for event in data:
-                            for bm in event.get('bookmakers', []):
-                                for market in bm.get('markets', []):
-                                    m_key = market['key']
-                                    for out in market['outcomes']:
-                                        odds = out['price']
-                                        prob = (1/odds)*100
-                                        diff = abs(odds - t)
-                                        
-                                        if diff < min_diff and prob >= min_prob:
-                                            min_diff = diff
-                                            m_name = "WIN" if m_key == "h2h" else "O/U 2.5" if m_key == "totals" else "BTTS"
-                                            best_match = {
-                                                "match": f"{event['home_team']} vs {event['away_team']}",
-                                                "odd": odds,
-                                                "markt": f"{m_name}: {out['name']}",
-                                                "tijd": datetime.fromisoformat(event['commence_time'].replace('Z', '')).strftime('%H:%M'),
-                                                "prob": round(prob, 1)
-                                            }
-                        if best_match:
-                            found[t] = best_match
+                    for target in targets:
+                        best_match, min_diff = None, 1.0
+                        for item in data['response']:
+                            match_name = f"{item['fixture']['timezone']} - {item['league']['name']}"
+                            # API-Football structureert odds per bookmaker
+                            for bookmaker in item['bookmakers']:
+                                # We paken de eerste grote bookmaker (bijv. 1xBet of Bet365)
+                                for bet in bookmaker['bets']:
+                                    if bet['name'] in ["Match Winner", "Goals Over/Under", "Both Teams Score"]:
+                                        for value in bet['values']:
+                                            odd = float(value['odd'])
+                                            prob = (1/odd)*100
+                                            diff = abs(odd - target)
+                                            if diff < min_diff and prob >= min_prob:
+                                                min_diff = diff
+                                                best_match = {
+                                                    "match": f"{item['fixture']['id']} - {item['league']['name']}",
+                                                    "odd": odd,
+                                                    "markt": f"{bet['name']}: {value['value']}",
+                                                    "tijd": "Vandaag",
+                                                    "prob": round(prob, 1)
+                                                }
+                        if best_match: found[target] = best_match
                     
                     st.session_state.gen_slips = found
-                    st.success(f"Laatste succesvolle scan: {datetime.now().strftime('%H:%M:%S')}")
+                    st.success("Scan voltooid!")
                 else:
-                    st.error(f"Fout {r.status_code}: De API weigert de verbinding.")
+                    st.error(f"Fout: {data.get('errors') or 'Geen data gevonden voor vandaag'}")
             except Exception as e:
-                st.error(f"Verbindingsfout: {e}")
+                st.error(f"Connectiefout: {e}")
 
-    # DISPLAY KOLOMMEN
+    # DISPLAY 4 KOLOMMEN
     if st.session_state.gen_slips:
         cols = st.columns(4)
-        targets = [1.5, 2.0, 3.0, 5.0]
-        for i, t in enumerate(targets):
+        for i, t in enumerate([1.5, 2.0, 3.0, 5.0]):
             with cols[i]:
                 if t in st.session_state.gen_slips:
                     info = st.session_state.gen_slips[t]
                     st.markdown(f"### Target {t}")
                     st.metric("Odd", f"@{info['odd']}")
-                    st.write(f"**{info['match']}**")
                     st.info(info['markt'])
-                    st.caption(f"🕒 {info['tijd']} | {info['prob']}%")
-                    
+                    st.caption(f"{info['prob']}% kans")
                     stake = st.number_input(f"Inzet", min_value=1.0, value=10.0, key=f"s_{t}")
                     if st.button(f"Bevestig", key=f"b_{t}"):
                         if st.session_state.bankroll >= stake:
                             st.session_state.bankroll -= stake
                             st.session_state.active_bets.append({
                                 "Match": info['match'], "Odd": info['odd'], "Inzet": stake, 
-                                "Markt": info['markt'], "Tijd": info['tijd'], "Score": "0-0"
+                                "Markt": info['markt'], "Score": "Live"
                             })
                             if user_id: auto_save(user_id)
                             st.rerun()
@@ -160,7 +159,4 @@ with t2:
         st.table(pd.DataFrame(st.session_state.active_bets))
 
 with t3:
-    if st.session_state.active_bets:
-        for b in st.session_state.active_bets:
-            st.write(f"**{b['Match']}** - {b['Score']}")
-            st.divider()
+    st.write("Live scores worden hier geladen zodra de wedstrijden starten.")
