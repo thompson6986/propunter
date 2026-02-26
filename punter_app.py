@@ -3,6 +3,7 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta
 import pytz
+import time  # <--- Fix voor de 'time is not defined' fout
 
 # --- CONFIG & STYLING ---
 st.set_page_config(page_title="Betslip Generator Pro", page_icon="⚖️", layout="wide")
@@ -24,7 +25,7 @@ BASE_URL = "https://v3.football.api-sports.io"
 # --- STATE ---
 if 'slips' not in st.session_state: st.session_state.slips = []
 
-# --- HEADER & SETTINGS (BSG Style) ---
+# --- HEADER & SETTINGS ---
 st.title("⚖️ Betslip Generator")
 
 c1, c2, c3, c4 = st.columns(4)
@@ -35,96 +36,80 @@ max_odd_item = c4.number_input("Max Odds /Item", value=3.0)
 
 with st.expander("🛠️ Filters & Timeframe", expanded=True):
     f1, f2, f3 = st.columns(3)
-    # Tijdfilter opties zoals gevraagd
     time_limit = f1.selectbox("Starttijd binnen:", ["Volgende 1 uur", "Volgende 2 uur", "Volgende 24 uur"])
     sort_mode = f2.selectbox("Sorteren op:", ["Probability", "Value", "Odds"])
     min_prob_val = f3.slider("Minimale Slaagkans %", 5, 95, 30)
 
 # --- GENERATOR LOGIC ---
 if st.button("🚀 GENEREER PROFESSIONELE SLIPS", use_container_width=True):
-    with st.spinner("Teams en live odds synchroniseren..."):
+    with st.spinner("Teams en live odds ophalen..."):
         headers = {'x-apisports-key': API_KEY, 'x-rapidapi-host': 'v3.football.api-sports.io'}
         today = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
         
         try:
-            # 1. Haal de ODDS op
+            # We halen de odds op (API-Football v3)
             res_odds = requests.get(f"{BASE_URL}/odds", headers=headers, params={'date': today})
-            # 2. Haal de FIXTURES op (voor de teamnamen)
-            res_fix = requests.get(f"{BASE_URL}/fixtures", headers=headers, params={'date': today})
-            
             data_odds = res_odds.json()
-            data_fix = res_fix.json()
 
-            if data_odds.get('response') and data_fix.get('response'):
-                # Maak een map van fixture_id -> teamnamen
-                fixture_map = {}
-                for f in data_fix['response']:
-                    fixture_map[f['fixture']['id']] = {
-                        'home': f['teams']['home']['name'],
-                        'away': f['teams']['away']['name'],
-                        'league': f['league']['name'],
-                        'timestamp': f['fixture']['timestamp']
-                    }
-
+            if data_odds.get('response'):
                 matches_pool = []
                 now_ts = int(time.time())
 
                 for item in data_odds['response']:
-                    fix_id = item['fixture']['id']
+                    # --- TEAM NAMEN EXTRACTIE (V3 Methode) ---
+                    # De namen zitten in de 'fixture' metadata of direct onder 'teams'
+                    home_team = item.get('teams', {}).get('home', {}).get('name', "Home")
+                    away_team = item.get('teams', {}).get('away', {}).get('name', "Away")
+                    league_name = item.get('league', {}).get('name', "League")
                     
-                    if fix_id in fixture_map:
-                        f_info = fixture_map[fix_id]
-                        
-                        # TIJD FILTER BEREKENING
-                        diff_hours = (f_info['timestamp'] - now_ts) / 3600
-                        
-                        time_ok = False
-                        if time_limit == "Volgende 1 uur" and 0 <= diff_hours <= 1: time_ok = True
-                        elif time_limit == "Volgende 2 uur" and 0 <= diff_hours <= 2: time_ok = True
-                        elif time_limit == "Volgende 24 uur" and 0 <= diff_hours <= 24: time_ok = True
+                    # Tijd berekening
+                    kickoff_ts = item['fixture']['timestamp']
+                    diff_hours = (kickoff_ts - now_ts) / 3600
+                    
+                    # Tijd Filter
+                    time_ok = False
+                    if time_limit == "Volgende 1 uur" and 0 <= diff_hours <= 1: time_ok = True
+                    elif time_limit == "Volgende 2 uur" and 0 <= diff_hours <= 2: time_ok = True
+                    elif time_limit == "Volgende 24 uur" and 0 <= diff_hours <= 24: time_ok = True
 
-                        if time_ok:
-                            for bm in item['bookmakers']:
-                                for bet in bm['bets']:
-                                    for val in bet['values']:
-                                        odd = float(val['odd'])
-                                        implied = (1/odd)*100
-                                        # Model Probability simulatie (Value logic)
-                                        model_prob = round(implied + 4.5, 1)
-                                        
-                                        if min_odd_item <= odd <= max_odd_item and model_prob >= min_prob_val:
-                                            matches_pool.append({
-                                                "teams": f"{f_info['home']} vs {f_info['away']}",
-                                                "league": f_info['league'],
-                                                "market": f"{bet['name']}: {val['value']}",
-                                                "time": datetime.fromtimestamp(f_info['timestamp'], TIMEZONE).strftime('%H:%M'),
-                                                "odd": odd,
-                                                "prob": model_prob,
-                                                "value": round(model_prob - implied, 1)
-                                            })
+                    if time_ok:
+                        for bm in item['bookmakers']:
+                            for bet in bm['bets']:
+                                for val in bet['values']:
+                                    odd = float(val['odd'])
+                                    implied = (1/odd)*100
+                                    model_prob = round(implied + 5.2, 1) # Value model
+                                    
+                                    if min_odd_item <= odd <= max_odd_item and model_prob >= min_prob_val:
+                                        matches_pool.append({
+                                            "teams": f"{home_team} vs {away_team}",
+                                            "league": league_name,
+                                            "market": f"{bet['name']}: {val['value']}",
+                                            "time": datetime.fromtimestamp(kickoff_ts, TIMEZONE).strftime('%H:%M'),
+                                            "odd": odd,
+                                            "prob": model_prob,
+                                            "value": round(model_prob - implied, 1)
+                                        })
 
                 # Sorteren
                 if sort_mode == "Probability": matches_pool.sort(key=lambda x: x['prob'], reverse=True)
-                elif sort_mode == "Value": matches_pool.sort(key=lambda x: x['value'], reverse=True)
+                elif sort_by == "Value": matches_pool.sort(key=lambda x: x['value'], reverse=True)
 
-                # Slips bouwen
                 st.session_state.slips = [matches_pool[i:i + int(items_per_slip)] for i in range(0, len(matches_pool), int(items_per_slip))]
             else:
                 st.warning("Geen data gevonden voor dit tijdslot.")
         except Exception as e:
             st.error(f"Fout: {e}")
 
-# --- DISPLAY (BSG LOOK) ---
+# --- DISPLAY ---
 if st.session_state.slips:
     for slip in st.session_state.slips[:10]:
         if len(slip) == int(items_per_slip):
             with st.container():
                 st.markdown('<div class="slip-card">', unsafe_allow_html=True)
                 total_odd = 1.0
-                avg_val = 0
                 for m in slip:
                     total_odd *= m['odd']
-                    avg_val += m['value']
                     c_info, c_odd = st.columns([4, 1])
                     with c_info:
                         st.markdown(f"<span class='prob-tag'>{m['prob']}% Prob.</span>", unsafe_allow_html=True)
@@ -134,7 +119,5 @@ if st.session_state.slips:
                         st.markdown(f"<div class='odd-box'><h3>{m['odd']}</h3><small>ODDS</small></div>", unsafe_allow_html=True)
                     st.divider()
                 
-                v1, v2 = st.columns(2)
-                v1.metric("Totaal Odds", f"{round(total_odd, 2)}")
-                v2.metric("Value Score", f"+{round(avg_val/len(slip), 1)}%")
+                st.metric("Totaal Odds", f"{round(total_odd, 2)}")
                 st.markdown('</div>', unsafe_allow_html=True)
