@@ -2,4 +2,5 @@ streamlit
 requests
 pandas
 lucide-react
-google-cloud-firestore
+Pytz
+Google-cloud-firestore & grpcio-status
